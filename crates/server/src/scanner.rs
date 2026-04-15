@@ -23,22 +23,23 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     }
 
     let walk_started = Instant::now();
-    let audio_files = collect_audio_files(root)?;
+    let library_files = collect_library_files(root)?;
     eprintln!(
-        "[scanner] scan start root={} tracks={} cache={} walk_ms={}",
+        "[scanner] scan start root={} tracks={} cover_dirs={} cache={} walk_ms={}",
         root.display(),
-        audio_files.len(),
+        library_files.audio_files.len(),
+        library_files.sidecar_by_dir.len(),
         root.join(CACHE_DB_FILE).display(),
         walk_started.elapsed().as_millis()
     );
 
     let cache_started = Instant::now();
     let mut cache = ScanCache::open(root)?;
-    let mut scanned_tracks = Vec::with_capacity(audio_files.len());
+    let mut scanned_tracks = Vec::with_capacity(library_files.audio_files.len());
     let mut cache_hits = 0;
     let mut cache_misses = 0;
 
-    for (index, path) in audio_files.iter().enumerate() {
+    for (index, path) in library_files.audio_files.iter().enumerate() {
         let mut scanned_track = ScannedTrack::from_path(root, path)?;
         match cache.load_track_tags(
             &scanned_track.relative_path_string,
@@ -57,11 +58,11 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
         scanned_tracks.push(scanned_track);
 
         let scanned = index + 1;
-        if scanned % SCAN_PROGRESS_BATCH_SIZE == 0 || scanned == audio_files.len() {
+        if scanned % SCAN_PROGRESS_BATCH_SIZE == 0 || scanned == library_files.audio_files.len() {
             eprintln!(
                 "[scanner] scan progress tracks={}/{} cache_hits={} cache_misses={}",
                 scanned,
-                audio_files.len(),
+                library_files.audio_files.len(),
                 cache_hits,
                 cache_misses
             );
@@ -69,7 +70,7 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     }
     eprintln!(
         "[scanner] cache lookup complete tracks={} cache_hits={} cache_misses={} elapsed_ms={}",
-        audio_files.len(),
+        library_files.audio_files.len(),
         cache_hits,
         cache_misses,
         cache_started.elapsed().as_millis()
@@ -108,7 +109,7 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     }
 
     let index_started = Instant::now();
-    let mut builder = LibraryBuilder::default();
+    let mut builder = LibraryBuilder::new(library_files.sidecar_by_dir);
     for scanned_track in scanned_tracks {
         builder.add_track(root, scanned_track)?;
     }
@@ -123,14 +124,23 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     Ok(builder.build(cache_hits, cache_misses))
 }
 
-fn collect_audio_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+struct LibraryFiles {
+    audio_files: Vec<PathBuf>,
+    sidecar_by_dir: BTreeMap<PathBuf, Option<PathBuf>>,
+}
+
+fn collect_library_files(root: &Path) -> Result<LibraryFiles> {
+    let mut files = LibraryFiles {
+        audio_files: Vec::new(),
+        sidecar_by_dir: BTreeMap::new(),
+    };
     visit_dir(root, root, &mut files)?;
-    files.sort();
+    files.audio_files.sort();
     Ok(files)
 }
 
-fn visit_dir(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+fn visit_dir(root: &Path, dir: &Path, files: &mut LibraryFiles) -> Result<()> {
+    let mut image_files = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -144,10 +154,15 @@ fn visit_dir(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
         }
 
         if is_audio_file(&path) {
-            files.push(path);
+            files.audio_files.push(path);
+        } else if detect_image_content_type(&path).is_some() {
+            image_files.push(path);
         }
     }
 
+    files
+        .sidecar_by_dir
+        .insert(dir.to_path_buf(), choose_sidecar_image(image_files));
     Ok(())
 }
 
@@ -171,6 +186,13 @@ struct LibraryBuilder {
 }
 
 impl LibraryBuilder {
+    fn new(sidecar_by_dir: BTreeMap<PathBuf, Option<PathBuf>>) -> Self {
+        Self {
+            sidecar_by_dir,
+            ..Self::default()
+        }
+    }
+
     fn add_track(&mut self, root: &Path, scanned: ScannedTrack) -> Result<()> {
         let path = scanned.path;
         let relative_path = scanned.relative_path;
@@ -289,14 +311,7 @@ impl LibraryBuilder {
         let Some(parent) = track_path.parent() else {
             return Ok(None);
         };
-        let sidecar = if let Some(cached) = self.sidecar_by_dir.get(parent) {
-            cached.clone()
-        } else {
-            let discovered = find_sidecar_image(parent)?;
-            self.sidecar_by_dir
-                .insert(parent.to_path_buf(), discovered.clone());
-            discovered
-        };
+        let sidecar = self.sidecar_by_dir.get(parent).cloned().flatten();
         let Some(sidecar) = sidecar else {
             return Ok(None);
         };
@@ -756,16 +771,7 @@ fn parse_track_name(name: &str) -> (Option<u32>, String) {
     (None, first.trim().to_string())
 }
 
-fn find_sidecar_image(dir: &Path) -> Result<Option<PathBuf>> {
-    let mut images = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && detect_image_content_type(&path).is_some() {
-            images.push(path);
-        }
-    }
-
+fn choose_sidecar_image(mut images: Vec<PathBuf>) -> Option<PathBuf> {
     images.sort_by_key(|path| {
         let file_name = path
             .file_name()
@@ -784,7 +790,7 @@ fn find_sidecar_image(dir: &Path) -> Result<Option<PathBuf>> {
         (priority, file_name)
     });
 
-    Ok(images.into_iter().next())
+    images.into_iter().next()
 }
 
 fn modified_unix(metadata: &fs::Metadata) -> Result<i64> {
