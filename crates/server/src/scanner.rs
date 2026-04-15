@@ -7,8 +7,10 @@ use crate::index::{CoverArtSource, LibraryIndex};
 use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
 use protocol::{Album, AlbumId, Artist, ArtistId, CoverArtId, Track, TrackId};
+use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const CACHE_DB_FILE: &str = "iroh-music-server.db";
 const SCAN_PROGRESS_BATCH_SIZE: usize = 100;
@@ -26,23 +28,64 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
         root.join(CACHE_DB_FILE).display()
     );
 
-    let cache = ScanCache::open(root)?;
-    let mut builder = LibraryBuilder::new(cache);
+    let mut cache = ScanCache::open(root)?;
+    let mut scanned_tracks = Vec::with_capacity(audio_files.len());
+    let mut cache_hits = 0;
+    let mut cache_misses = 0;
+
     for (index, path) in audio_files.iter().enumerate() {
-        builder.add_track(root, path)?;
+        let mut scanned_track = ScannedTrack::from_path(root, path)?;
+        match cache.load_track_tags(
+            &scanned_track.relative_path_string,
+            scanned_track.file_size,
+            scanned_track.modified_unix,
+        )? {
+            Some(tags) => {
+                cache_hits += 1;
+                scanned_track.tags = Some(tags);
+            }
+            None => {
+                cache_misses += 1;
+            }
+        }
+        scanned_tracks.push(scanned_track);
+
         let scanned = index + 1;
         if scanned % SCAN_PROGRESS_BATCH_SIZE == 0 || scanned == audio_files.len() {
             eprintln!(
                 "[scanner] scan progress tracks={}/{} cache_hits={} cache_misses={}",
                 scanned,
                 audio_files.len(),
-                builder.cache_hits,
-                builder.cache_misses
+                cache_hits,
+                cache_misses
             );
         }
     }
-    builder.prune_cache()?;
-    Ok(builder.build())
+
+    fill_missing_tags_parallel(&mut scanned_tracks, cache_misses);
+    for scanned_track in &scanned_tracks {
+        let Some(tags) = &scanned_track.tags else {
+            continue;
+        };
+        cache.store_track_tags(
+            &scanned_track.relative_path_string,
+            scanned_track.file_size,
+            scanned_track.modified_unix,
+            tags,
+        )?;
+    }
+
+    let seen_audio_paths = scanned_tracks
+        .iter()
+        .map(|track| track.relative_path_string.clone())
+        .collect::<Vec<_>>();
+    cache.prune_missing(&seen_audio_paths)?;
+
+    let mut builder = LibraryBuilder::default();
+    for scanned_track in scanned_tracks {
+        builder.add_track(root, scanned_track)?;
+    }
+    Ok(builder.build(cache_hits, cache_misses))
 }
 
 fn collect_audio_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -82,10 +125,6 @@ fn is_audio_file(path: &Path) -> bool {
 
 #[derive(Default)]
 struct LibraryBuilder {
-    cache: ScanCache,
-    cache_hits: usize,
-    cache_misses: usize,
-    seen_audio_paths: Vec<String>,
     artists_by_name: BTreeMap<String, ArtistId>,
     albums_by_key: BTreeMap<(String, String), AlbumId>,
     cover_art_by_path: BTreeMap<PathBuf, CoverArtId>,
@@ -97,55 +136,12 @@ struct LibraryBuilder {
 }
 
 impl LibraryBuilder {
-    fn new(cache: ScanCache) -> Self {
-        Self {
-            cache,
-            ..Self::default()
-        }
-    }
-
-    fn add_track(&mut self, root: &Path, path: &Path) -> Result<()> {
-        let relative_path = path.strip_prefix(root).map(PathBuf::from).map_err(|_| {
-            Error::InvalidRequest(format!("path outside music root: {}", path.display()))
+    fn add_track(&mut self, root: &Path, scanned: ScannedTrack) -> Result<()> {
+        let path = scanned.path;
+        let relative_path = scanned.relative_path;
+        let tags = scanned.tags.ok_or_else(|| {
+            Error::InvalidRequest(format!("missing scanned tags for {}", path.display()))
         })?;
-        let relative_path_string = relative_path.to_string_lossy().into_owned();
-        let metadata = fs::metadata(path)?;
-        let modified_unix = modified_unix(&metadata)?;
-        self.seen_audio_paths.push(relative_path_string.clone());
-
-        let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_path);
-        let file_name = relative_path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Unknown Track");
-        let (fallback_track_number, fallback_title) = parse_track_name(file_name);
-        let tags = match self.cache.load_track_tags(
-            &relative_path_string,
-            metadata.len(),
-            modified_unix,
-        )? {
-            Some(tags) => {
-                self.cache_hits += 1;
-                tags
-            }
-            None => {
-                self.cache_misses += 1;
-                let tags = read_track_tags(
-                    path,
-                    fallback_artist,
-                    fallback_album,
-                    fallback_title,
-                    fallback_track_number,
-                );
-                self.cache.store_track_tags(
-                    &relative_path_string,
-                    metadata.len(),
-                    modified_unix,
-                    &tags,
-                )?;
-                tags
-            }
-        };
 
         let album_artist = tags
             .album_artist
@@ -159,7 +155,7 @@ impl LibraryBuilder {
             tags.album,
             relative_path.display()
         )));
-        let cover_art_id = self.cover_art_for(root, path)?;
+        let cover_art_id = self.cover_art_for(root, &path)?;
 
         let track = Track {
             id: track_id.clone(),
@@ -182,9 +178,9 @@ impl LibraryBuilder {
             musicbrainz_release_group_id: tags.musicbrainz_release_group_id.clone(),
             cover_art_id: cover_art_id.clone(),
             relative_path,
-            file_size: metadata.len(),
-            modified_at: metadata.modified()?,
-            content_type: detect_content_type(path),
+            file_size: scanned.file_size,
+            modified_at: scanned.modified_at,
+            content_type: detect_content_type(&path),
         };
 
         let artist = self.artists.get_mut(&artist_id).expect("artist inserted");
@@ -194,7 +190,7 @@ impl LibraryBuilder {
 
         let album = self.albums.get_mut(&album_id).expect("album inserted");
         album.track_ids.push(track_id.clone());
-        merge_album_track_metadata(album, &track, metadata.len(), cover_art_id);
+        merge_album_track_metadata(album, &track, scanned.file_size, cover_art_id);
         self.tracks.insert(track_id.clone(), track);
 
         Ok(())
@@ -292,19 +288,15 @@ impl LibraryBuilder {
         Ok(Some(id))
     }
 
-    fn prune_cache(&mut self) -> Result<()> {
-        self.cache.prune_missing(&self.seen_audio_paths)
-    }
-
-    fn build(self) -> LibraryIndex {
+    fn build(self, cache_hits: usize, cache_misses: usize) -> LibraryIndex {
         eprintln!(
             "[scanner] scan complete artists={} albums={} tracks={} cover_arts={} cache_hits={} cache_misses={}",
             self.artists.len(),
             self.albums.len(),
             self.tracks.len(),
             self.cover_arts.len(),
-            self.cache_hits,
-            self.cache_misses
+            cache_hits,
+            cache_misses
         );
         LibraryIndex {
             artists: self.artists,
@@ -334,6 +326,87 @@ struct TrackTags {
     musicbrainz_recording_id: Option<String>,
     musicbrainz_album_id: Option<String>,
     musicbrainz_release_group_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct ScannedTrack {
+    path: PathBuf,
+    relative_path: PathBuf,
+    relative_path_string: String,
+    file_size: u64,
+    modified_unix: i64,
+    modified_at: std::time::SystemTime,
+    fallback_artist: String,
+    fallback_album: String,
+    fallback_title: String,
+    fallback_track_number: Option<u32>,
+    tags: Option<TrackTags>,
+}
+
+impl ScannedTrack {
+    fn from_path(root: &Path, path: &Path) -> Result<Self> {
+        let relative_path = path.strip_prefix(root).map(PathBuf::from).map_err(|_| {
+            Error::InvalidRequest(format!("path outside music root: {}", path.display()))
+        })?;
+        let relative_path_string = relative_path.to_string_lossy().into_owned();
+        let metadata = fs::metadata(path)?;
+        let modified_unix = modified_unix(&metadata)?;
+        let modified_at = metadata.modified()?;
+        let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_path);
+        let file_name = relative_path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Unknown Track");
+        let (fallback_track_number, fallback_title) = parse_track_name(file_name);
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            relative_path,
+            relative_path_string,
+            file_size: metadata.len(),
+            modified_unix,
+            modified_at,
+            fallback_artist,
+            fallback_album,
+            fallback_title,
+            fallback_track_number,
+            tags: None,
+        })
+    }
+}
+
+fn fill_missing_tags_parallel(scanned_tracks: &mut [ScannedTrack], cache_misses: usize) {
+    if cache_misses == 0 {
+        return;
+    }
+
+    eprintln!(
+        "[scanner] tag extraction start misses={} threads={}",
+        cache_misses,
+        rayon::current_num_threads()
+    );
+    let progress = AtomicUsize::new(0);
+    scanned_tracks
+        .par_iter_mut()
+        .filter(|track| track.tags.is_none())
+        .for_each(|track| {
+            let tags = read_track_tags(
+                &track.path,
+                track.fallback_artist.clone(),
+                track.fallback_album.clone(),
+                track.fallback_title.clone(),
+                track.fallback_track_number,
+            );
+            track.tags = Some(tags);
+
+            let parsed = progress.fetch_add(1, Ordering::Relaxed) + 1;
+            if parsed % SCAN_PROGRESS_BATCH_SIZE == 0 || parsed == cache_misses {
+                eprintln!(
+                    "[scanner] tag extraction progress parsed={}/{}",
+                    parsed, cache_misses
+                );
+            }
+        });
 }
 
 struct ScanCache {

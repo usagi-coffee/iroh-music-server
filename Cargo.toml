@@ -8,6 +8,7 @@ iroh = "0.97"
 lofty = "0.24"
 md5 = "0.7"
 notify = "8"
+rayon = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
