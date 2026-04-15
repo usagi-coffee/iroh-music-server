@@ -89,6 +89,7 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     }
 
     let store_started = Instant::now();
+    eprintln!("[scanner] cache store start");
     cache.store_track_tags_batch(&scanned_tracks)?;
     eprintln!(
         "[scanner] cache store complete elapsed_ms={}",
@@ -107,6 +108,7 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     }
 
     let index_started = Instant::now();
+    eprintln!("[scanner] index build dispatch");
     let builder = build_index_parallel(root, &scanned_tracks, library_files.sidecar_by_dir)?;
     eprintln!(
         "[scanner] index build complete elapsed_ms={}",
@@ -335,6 +337,13 @@ impl LibraryBuilder {
 
     fn build(self, cache_hits: usize, cache_misses: usize) -> LibraryIndex {
         eprintln!(
+            "[scanner] finalizing library artists={} albums={} tracks={} cover_arts={}",
+            self.artists.len(),
+            self.albums.len(),
+            self.tracks.len(),
+            self.cover_arts.len()
+        );
+        eprintln!(
             "[scanner] scan complete artists={} albums={} tracks={} cover_arts={} cache_hits={} cache_misses={}",
             self.artists.len(),
             self.albums.len(),
@@ -429,21 +438,62 @@ fn build_index_parallel(
         chunk_size
     );
 
+    let built_chunks = AtomicUsize::new(0);
+    let partials_started = Instant::now();
     let partials = scanned_tracks
         .par_chunks(chunk_size)
-        .map(|chunk| {
+        .enumerate()
+        .map(|(chunk_index, chunk)| {
+            let chunk_started = Instant::now();
+            eprintln!(
+                "[scanner] index chunk start chunk={} tracks={}",
+                chunk_index,
+                chunk.len()
+            );
             let mut builder = LibraryBuilder::new(sidecar_by_dir.clone());
             for scanned_track in chunk {
                 builder.add_track(root, scanned_track.clone())?;
             }
+            let completed = built_chunks.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!(
+                "[scanner] index chunk complete chunk={} tracks={} elapsed_ms={} completed_chunks={}",
+                chunk_index,
+                chunk.len(),
+                chunk_started.elapsed().as_millis(),
+                completed
+            );
             Ok(builder)
         })
         .collect::<Result<Vec<_>>>()?;
+    eprintln!(
+        "[scanner] index partial build complete chunks={} elapsed_ms={}",
+        partials.len(),
+        partials_started.elapsed().as_millis()
+    );
 
     let mut merged = LibraryBuilder::new(sidecar_by_dir);
-    for partial in partials {
+    let merge_started = Instant::now();
+    for (index, partial) in partials.into_iter().enumerate() {
+        let partial_artists = partial.artists.len();
+        let partial_albums = partial.albums.len();
+        let partial_tracks = partial.tracks.len();
+        let partial_cover_arts = partial.cover_arts.len();
+        let partial_started = Instant::now();
+        eprintln!(
+            "[scanner] index merge start chunk={} artists={} albums={} tracks={} cover_arts={}",
+            index, partial_artists, partial_albums, partial_tracks, partial_cover_arts
+        );
         merged.merge(partial);
+        eprintln!(
+            "[scanner] index merge complete chunk={} elapsed_ms={}",
+            index,
+            partial_started.elapsed().as_millis()
+        );
     }
+    eprintln!(
+        "[scanner] index merge all complete elapsed_ms={}",
+        merge_started.elapsed().as_millis()
+    );
     Ok(merged)
 }
 
@@ -645,7 +695,7 @@ impl ScanCache {
                     updated_unix = excluded.updated_unix
                 "#,
             )?;
-            for scanned_track in &tracks_to_store {
+            for (index, scanned_track) in tracks_to_store.iter().enumerate() {
                 let Some(tags) = &scanned_track.tags else {
                     continue;
                 };
@@ -655,6 +705,14 @@ impl ScanCache {
                     scanned_track.modified_unix,
                     serde_json::to_string(tags)?,
                 ])?;
+                let stored = index + 1;
+                if stored % SCAN_PROGRESS_BATCH_SIZE == 0 || stored == tracks_to_store.len() {
+                    eprintln!(
+                        "[scanner] cache store progress rows={}/{}",
+                        stored,
+                        tracks_to_store.len()
+                    );
+                }
             }
         }
         tx.commit()?;
@@ -663,16 +721,26 @@ impl ScanCache {
     }
 
     fn prune_missing(&mut self, seen_audio_paths: &[String]) -> Result<()> {
+        eprintln!("[scanner] cache prune start seen={}", seen_audio_paths.len());
         let tx = self.conn.transaction()?;
         tx.execute("CREATE TEMP TABLE IF NOT EXISTS seen_audio_paths (relative_path TEXT PRIMARY KEY NOT NULL)", [])?;
         tx.execute("DELETE FROM seen_audio_paths", [])?;
         {
             let mut stmt =
                 tx.prepare("INSERT OR IGNORE INTO seen_audio_paths (relative_path) VALUES (?1)")?;
-            for relative_path in seen_audio_paths {
+            for (index, relative_path) in seen_audio_paths.iter().enumerate() {
                 stmt.execute(params![relative_path])?;
+                let inserted = index + 1;
+                if inserted % SCAN_PROGRESS_BATCH_SIZE == 0 || inserted == seen_audio_paths.len() {
+                    eprintln!(
+                        "[scanner] cache prune seen progress rows={}/{}",
+                        inserted,
+                        seen_audio_paths.len()
+                    );
+                }
             }
         }
+        eprintln!("[scanner] cache prune delete stale start");
         let removed = tx.execute(
             "DELETE FROM track_tags WHERE relative_path NOT IN (SELECT relative_path FROM seen_audio_paths)",
             [],
