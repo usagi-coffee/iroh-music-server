@@ -1,0 +1,376 @@
+## Goal
+
+Build a Rust project with two cooperating pieces:
+
+1. An `iroh` music server that exposes a music library from a local directory over an `iroh` endpoint.
+2. A Subsonic-compatible HTTP service that mimics enough of the Subsonic API for existing clients, while using the `iroh` music server as its backend.
+
+The Subsonic-facing component is the compatibility layer. It should translate Subsonic requests into `iroh` backend operations and return Subsonic-shaped XML or JSON responses.
+
+Design rule:
+
+- `server` must not speak Subsonic to clients.
+- Only `subsonic` implements the Subsonic protocol.
+- The backend exposed by `server` must stay protocol-agnostic so additional facades can be added later for other client protocols.
+
+## Scope Assumptions
+
+- The server is authoritative for the filesystem music library.
+- The compatibility service can run on the same machine as the user or separately from the `iroh` server.
+- Initial support should target read-only media use cases:
+  - ping
+  - authentication / identity handshake
+  - library browsing
+  - album / artist / track lookup
+  - cover art lookup
+  - audio streaming
+- Write APIs, playlists, podcast features, ratings, chat, sharing, and admin endpoints are out of scope for v1.
+
+## Monorepo Structure
+
+Use a Cargo workspace with a `crates/` layout, but keep it minimal. Do not force a separate domain crate. The primary crates should be `crates/server` and `crates/subsonic`.
+
+Workspace shape:
+
+```text
+Cargo.toml
+crates/
+  server/
+  subsonic/
+```
+
+Recommended crate responsibilities:
+
+- `server`: owns the music library model, filesystem scan, metadata extraction, indexing, config, and a protocol-agnostic backend service exposed over `iroh`
+- `subsonic`: owns the Subsonic-compatible HTTP API, auth parsing, response serialization, and the adapter/client used to talk to `server`
+
+Optional later crates only if they become necessary:
+
+- `protocol`: only if the `iroh` request/response types need to be shared cleanly without making `subsonic` depend on the full server implementation
+- `cli`: only if operational commands grow enough to justify a separate binary crate
+
+Design rule:
+
+- Start with two crates. Extract a third crate only when the dependency boundary becomes obviously useful.
+
+## High-Level Architecture
+
+### 1. Iroh Music Server
+
+Responsibilities:
+
+- Scan a configured root music directory.
+- Build a normalized in-memory or persisted index of artists, albums, tracks, cover art, and file metadata.
+- Expose protocol-agnostic backend operations over `iroh` for:
+  - library summary
+  - artist listing
+  - album listing
+  - track lookup
+  - cover art fetch
+  - stream open by track id
+- Serve file bytes efficiently for audio streams and artwork.
+
+Non-responsibilities:
+
+- No Subsonic route handling
+- No Subsonic auth semantics
+- No Subsonic response serialization
+
+Primary crate involved:
+
+- `server`
+
+### 2. Subsonic Compatibility Service
+
+Responsibilities:
+
+- Expose HTTP endpoints compatible with selected Subsonic API routes.
+- Validate Subsonic auth parameters enough for clients to proceed.
+- Translate incoming Subsonic requests into backend calls against `server`.
+- Shape responses to Subsonic schemas.
+- Proxy or bridge audio streams from `iroh` to HTTP clients.
+
+Design rule:
+
+- `subsonic` is an adapter layer, not the source of truth for library semantics.
+- Any future protocol such as another media API should be added as a sibling facade crate, not by extending `server` with client-protocol logic.
+
+Primary crates involved:
+
+- `subsonic`
+- `server` as the backend contract owner, or a later `protocol` crate if that contract needs isolation
+
+## Recommended API Surface For V1
+
+Implement only the routes needed by common Subsonic clients to browse and play music:
+
+- `/rest/ping`
+- `/rest/getLicense`
+- `/rest/getIndexes`
+- `/rest/getArtists`
+- `/rest/getArtist`
+- `/rest/getAlbum`
+- `/rest/getSong`
+- `/rest/getCoverArt`
+- `/rest/stream`
+- `/rest/search3`
+
+Nice-to-have after baseline works:
+
+- `/rest/getAlbumList2`
+- `/rest/getStarred2`
+- `/rest/getGenres`
+- `/rest/getMusicDirectory`
+
+## Backend Protocol Design
+
+Define a small explicit protocol between the facade and the `iroh` server. Avoid leaking Subsonic-specific shapes into the backend.
+
+Placement:
+
+- Put these types in `server` first if `subsonic` can depend on `server` without pulling in heavy runtime concerns.
+- Extract them into `crates/protocol` only if compile-time coupling or dependency weight becomes a problem.
+
+Core request types:
+
+- `GetLibrarySummary`
+- `ListArtists`
+- `GetArtist { artist_id }`
+- `GetAlbum { album_id }`
+- `GetTrack { track_id }`
+- `Search { query, limit }`
+- `GetCoverArt { cover_art_id }`
+- `OpenStream { track_id }`
+
+Core response types:
+
+- `LibrarySummary`
+- `Artist`
+- `Album`
+- `Track`
+- `CoverArtBytes`
+- `StreamHandle` or stream metadata for chunked transfer
+
+Design rule:
+
+- Use stable internal IDs generated by the server index, not raw filesystem paths in the public protocol.
+- Do not use Subsonic names, envelopes, or field conventions in the backend contract.
+
+## Library Index Design
+
+Track enough metadata to satisfy Subsonic clients without overbuilding.
+
+Per track:
+
+- internal id
+- title
+- artist
+- album
+- album artist
+- track number
+- disc number
+- duration
+- codec / content type
+- bitrate if available
+- file size
+- relative path
+- modified timestamp
+- optional embedded or sidecar cover art id
+
+Per album:
+
+- internal id
+- title
+- artist / album artist
+- year
+- genre
+- cover art id
+- track ids
+
+Per artist:
+
+- internal id
+- name
+- album ids
+
+Implementation note:
+
+- Start with a full startup scan and an in-memory index.
+- Add persistence or file watching only after the request/response flow is working.
+
+## HTTP and Streaming Behavior
+
+The compatibility service must behave like a normal Subsonic server from the client perspective.
+
+- Support both XML and JSON response modes if practical; XML first is acceptable because many Subsonic clients default to it.
+- Return Subsonic status envelopes and error codes consistently.
+- Preserve content type for audio streams, for example `audio/mpeg`, `audio/flac`, `audio/ogg`.
+- Support HTTP range requests for `/rest/stream` if the target clients require seeking.
+- Keep transcoding out of v1. Serve original files only.
+
+## Authentication Strategy
+
+For v1, keep auth simple but compatible.
+
+- Accept fixed configured credentials on the Subsonic side.
+- Support Subsonic password and token+salt styles if possible.
+- Authenticate the compatibility service to the `iroh` server using endpoint capability, shared secret, or node ticket rather than forwarding Subsonic credentials directly.
+
+Design rule:
+
+- Separate client-facing auth from backend trust. Subsonic auth proves who the HTTP client is; `iroh` auth proves the compatibility service may access the music server.
+
+## Suggested Crate Choices
+
+Prefer a small, conventional Rust stack:
+
+- HTTP server: `axum`
+- async runtime: `tokio`
+- serialization: `serde`
+- XML generation: `quick-xml` or `serde-xml-rs` if it fits the required response format
+- metadata parsing: `lofty`
+- MIME detection: `mime_guess` or explicit mapping from codec/file extension
+- error handling: `thiserror` and `anyhow`
+- tracing: `tracing` and `tracing-subscriber`
+- backend transport: `iroh`
+
+Workspace recommendation:
+
+- Put shared dependency versions under `[workspace.dependencies]`.
+- Keep binaries thin and put most logic in each crate's `lib.rs`, with small `main.rs` entrypoints only where needed.
+
+## Delivery Phases
+
+### Phase 1: Skeleton
+
+- Convert the repo root into a Cargo workspace.
+- Create `crates/server` and `crates/subsonic`.
+- Add basic config loading and structured logging in both crates.
+- Define the music library models, ids, and index structures inside `server`.
+- Define the backend request/response contract either inside `server` or in a tiny `protocol` module within it.
+- Make the crate boundary explicit: `server` exposes backend capabilities, `subsonic` depends on them as an adapter.
+
+Exit criteria:
+
+- Workspace builds.
+- Both crates compile with placeholder handlers and a clear dependency boundary.
+
+### Phase 2: Local Library Scanner
+
+- Implement recursive directory scan for audio files in `server`.
+- Parse tags and derive fallback metadata from paths/file names when tags are missing.
+- Build in-memory indexes keyed by stable ids using the models owned by `server`.
+
+Exit criteria:
+
+- The `server` crate can expose a local command or test harness that prints indexed artists, albums, and tracks from a music directory.
+
+### Phase 3: Iroh Music Server
+
+- Start an `iroh` endpoint in `server`.
+- Expose handlers for metadata lookup and content fetch using the backend contract owned by `server`.
+- Implement stream opening for a selected track.
+
+Exit criteria:
+
+- `subsonic` or a small protocol test client can query artists, album details, and retrieve bytes for a track and cover art through `iroh`.
+
+### Phase 4: Subsonic Compatibility HTTP Service
+
+- Add `/rest/ping`, `/rest/getArtists`, `/rest/getArtist`, `/rest/getAlbum`, `/rest/getSong`, `/rest/getCoverArt`, `/rest/stream`, `/rest/search3` in `subsonic`.
+- Implement Subsonic response envelope and error mapping.
+- Bridge backend stream responses to HTTP via the `iroh` protocol client.
+- Keep all Subsonic-specific field mapping in `subsonic`, even when names overlap with backend concepts.
+
+Exit criteria:
+
+- A Subsonic client can connect, browse the library, fetch artwork, and play a track.
+
+### Phase 5: Compatibility Hardening
+
+- Add auth edge cases used by real Subsonic clients.
+- Add range request support and verify seeking.
+- Improve missing metadata behavior and fallback cover art behavior.
+- Add tests for route compatibility and response shape stability.
+
+Exit criteria:
+
+- At least one real Subsonic-compatible client works for browse and playback without manual hacks.
+
+## Testing Plan
+
+- Unit test metadata normalization and ID generation.
+- Unit test Subsonic response serialization.
+- Integration test library scan against a fixture directory.
+- Integration test `iroh` request/response flow using a temporary library.
+- Integration test HTTP routes with a mocked or in-process backend.
+- Add a small manual compatibility matrix with the specific Subsonic clients tested.
+
+## Risks And Design Constraints
+
+- Subsonic client compatibility can be sensitive to missing fields and exact response shape.
+- Music metadata in the wild is inconsistent; path-based fallback logic will matter.
+- Seeking may fail for some clients if HTTP range handling is incomplete.
+- Large libraries may make startup scan expensive; avoid premature optimization, but keep the index model serializable.
+- `iroh` stream semantics should be designed early so audio proxying does not need a rewrite later.
+
+## Suggested Repository Layout
+
+```text
+Cargo.toml
+crates/
+  server/
+    src/
+      lib.rs
+      main.rs
+      config.rs
+      error.rs
+      scanner.rs
+      metadata.rs
+      index.rs
+      models.rs
+      protocol.rs
+      stream.rs
+      server.rs
+      handlers.rs
+  subsonic/
+    src/
+      lib.rs
+      main.rs
+      config.rs
+      auth.rs
+      models.rs
+      response.rs
+      routes.rs
+      backend.rs
+```
+
+## Implementation Order
+
+1. Create the workspace with `server` and `subsonic` first.
+2. Build the library models and scanner inside `server` second.
+3. Define the backend protocol third.
+4. Implement the `iroh` music server fourth.
+5. Implement the Subsonic compatibility layer fifth.
+6. Extract a `protocol` crate only if the coupling becomes painful.
+7. Validate against a real Subsonic client before expanding API coverage.
+
+## Non-Goals For V1
+
+- Transcoding
+- Multi-user permission model
+- Writable playlists
+- Podcast or internet radio support
+- Admin UI
+- Full Subsonic API coverage
+- Embedding Subsonic semantics into `server`
+
+## First Concrete Next Step
+
+Convert the root `Cargo.toml` into a workspace, create `crates/server` and `crates/subsonic`, then add entrypoints like:
+
+- `cargo run -p server -- scan --music-dir /path/to/music`
+- `cargo run -p server -- serve --music-dir /path/to/music`
+- `cargo run -p subsonic -- serve --bind 127.0.0.1:4040 --iroh-ticket ...`
+
+This keeps the design grounded in a usable execution path instead of starting with HTTP compatibility details before the library and transport layers exist.

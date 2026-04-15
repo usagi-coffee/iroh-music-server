@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/protocol", "crates/server", "crates/subsonic"]
+resolver = "3"
+
+[workspace.dependencies]
+axum = "0.8"
+iroh = "0.97"
+lofty = "0.24"
+md5 = "0.7"
+notify = "8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
