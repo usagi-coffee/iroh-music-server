@@ -47,11 +47,19 @@ impl RemoteClient {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "<none>".to_string())
         );
-        let endpoint = endpoint_builder(&IrohConfig::default()).bind().await?;
         let addr = match relay {
             Some(relay_url) => EndpointAddr::new(endpoint_id).with_relay_url(relay_url),
             None => EndpointAddr::new(endpoint_id),
         };
+        Self::connect_addr(addr).await
+    }
+
+    pub async fn connect_addr(addr: EndpointAddr) -> Result<Self> {
+        eprintln!(
+            "[server-rpc-client] local endpoint startup remote_addr={:?}",
+            addr
+        );
+        let endpoint = endpoint_builder(&IrohConfig::default()).bind().await?;
         eprintln!(
             "[server-rpc-client] local endpoint ready local_endpoint={}",
             endpoint.id()
@@ -397,6 +405,7 @@ fn request_name(request: &BackendRequest) -> &'static str {
         BackendRequest::GetAlbumTracks { .. } => "GetAlbumTracks",
         BackendRequest::GetTrack { .. } => "GetTrack",
         BackendRequest::GetCoverArt { .. } => "GetCoverArt",
+        BackendRequest::ResolveId { .. } => "ResolveId",
         BackendRequest::Search { .. } => "Search",
         BackendRequest::OpenStream { .. } => "OpenStream",
     }

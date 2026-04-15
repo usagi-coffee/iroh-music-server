@@ -1,5 +1,5 @@
 use serde_json::json;
-use server::BackendResponse;
+use server::{BackendResponse, ResolvedId};
 
 use crate::auth::Credentials;
 use crate::backend::Backend;
@@ -89,83 +89,91 @@ async fn map_directory(
         return Ok(render_directory(format, "root", "Music", None, children));
     }
 
-    if let Ok(BackendResponse::Album(album)) = backend.album(id).await {
-        let BackendResponse::Tracks(tracks) = backend.album_tracks(id).await? else {
+    let resolved = match backend.resolve_id(id).await {
+        Ok(BackendResponse::ResolvedId(resolved)) => resolved,
+        Ok(_) => {
             return Err(server::Error::InvalidRequest(
-                "backend returned unexpected response for album tracks".to_string(),
+                "backend returned unexpected response for ResolveId".to_string(),
             ));
-        };
-        let children = tracks
-            .into_iter()
-            .map(|track| DirectoryChild {
+        }
+        Err(_) => return Ok(error_response(format, "unknown directory id")),
+    };
+
+    match resolved {
+        ResolvedId::Album(album) => {
+            let BackendResponse::Tracks(tracks) = backend.album_tracks(id).await? else {
+                return Err(server::Error::InvalidRequest(
+                    "backend returned unexpected response for album tracks".to_string(),
+                ));
+            };
+            let children = tracks
+                .into_iter()
+                .map(|track| DirectoryChild {
+                    id: track.id.0.clone(),
+                    title: track.title,
+                    is_dir: false,
+                    artist: Some(track.artist),
+                    album: Some(track.album),
+                    content_type: Some(track.content_type),
+                    cover_art: track.cover_art_id.map(|cover_art_id| cover_art_id.0),
+                    track: track.track_number,
+                    disc_number: track.disc_number,
+                    duration: track.duration_seconds,
+                    size: Some(track.file_size),
+                    parent: Some(id.to_string()),
+                })
+                .collect::<Vec<_>>();
+            Ok(render_directory(format, id, &album.title, None, children))
+        }
+        ResolvedId::Artist(artist) => {
+            let mut children = Vec::new();
+            for album_id in &artist.album_ids {
+                let BackendResponse::Album(album) = backend.album(&album_id.0).await? else {
+                    return Err(server::Error::InvalidRequest(
+                        "backend returned unexpected response for artist album".to_string(),
+                    ));
+                };
+                children.push(DirectoryChild {
+                    id: album.id.0,
+                    title: album.title.clone(),
+                    is_dir: true,
+                    artist: Some(album.artist.clone()),
+                    album: Some(album.title),
+                    content_type: None,
+                    cover_art: album.cover_art_id.map(|cover_art_id| cover_art_id.0),
+                    track: None,
+                    disc_number: None,
+                    duration: album.duration_seconds,
+                    size: Some(album.size_bytes),
+                    parent: Some(id.to_string()),
+                });
+            }
+            Ok(render_directory(
+                format,
+                id,
+                &artist.name,
+                Some("root"),
+                children,
+            ))
+        }
+        ResolvedId::Track(track) => {
+            let children = vec![DirectoryChild {
                 id: track.id.0.clone(),
-                title: track.title,
+                title: track.title.clone(),
                 is_dir: false,
-                artist: Some(track.artist),
-                album: Some(track.album),
-                content_type: Some(track.content_type),
+                artist: Some(track.artist.clone()),
+                album: Some(track.album.clone()),
+                content_type: Some(track.content_type.clone()),
                 cover_art: track.cover_art_id.map(|cover_art_id| cover_art_id.0),
                 track: track.track_number,
                 disc_number: track.disc_number,
                 duration: track.duration_seconds,
                 size: Some(track.file_size),
-                parent: Some(id.to_string()),
-            })
-            .collect::<Vec<_>>();
-        return Ok(render_directory(format, id, &album.title, None, children));
-    }
-
-    if let Ok(BackendResponse::Artist(artist)) = backend.artist(id).await {
-        let mut children = Vec::new();
-        for album_id in &artist.album_ids {
-            let BackendResponse::Album(album) = backend.album(&album_id.0).await? else {
-                return Err(server::Error::InvalidRequest(
-                    "backend returned unexpected response for artist album".to_string(),
-                ));
-            };
-            children.push(DirectoryChild {
-                id: album.id.0,
-                title: album.title.clone(),
-                is_dir: true,
-                artist: Some(album.artist.clone()),
-                album: Some(album.title),
-                content_type: None,
-                cover_art: album.cover_art_id.map(|cover_art_id| cover_art_id.0),
-                track: None,
-                disc_number: None,
-                duration: album.duration_seconds,
-                size: Some(album.size_bytes),
-                parent: Some(id.to_string()),
-            });
+                parent: None,
+            }];
+            Ok(render_directory(format, id, &track.title, None, children))
         }
-        return Ok(render_directory(
-            format,
-            id,
-            &artist.name,
-            Some("root"),
-            children,
-        ));
     }
-
-    if let Ok(BackendResponse::Track(track)) = backend.track(id).await {
-        let children = vec![DirectoryChild {
-            id: track.id.0.clone(),
-            title: track.title.clone(),
-            is_dir: false,
-            artist: Some(track.artist.clone()),
-            album: Some(track.album.clone()),
-            content_type: Some(track.content_type.clone()),
-            cover_art: track.cover_art_id.map(|cover_art_id| cover_art_id.0),
-            track: track.track_number,
-            disc_number: track.disc_number,
-            duration: track.duration_seconds,
-            size: Some(track.file_size),
-            parent: None,
-        }];
-        return Ok(render_directory(format, id, &track.title, None, children));
-    }
-
-    Ok(error_response(format, "unknown directory id"))
 }
 
 fn map_artists(

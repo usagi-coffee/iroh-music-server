@@ -2,6 +2,8 @@ use std::env;
 use std::process::ExitCode;
 use std::str::FromStr;
 
+use iroh::RelayUrl;
+use iroh_tickets::endpoint::EndpointTicket;
 use server::{BackendRequest, IrohConfig, MusicServer, ServerConfig, spawn_iroh_server};
 
 #[tokio::main]
@@ -40,8 +42,17 @@ async fn run() -> server::Result<()> {
     let summary = server.handle(BackendRequest::GetLibrarySummary)?;
     let handle = spawn_iroh_server(server, &iroh).await?;
     let endpoint = handle.endpoint.id();
+    let mut ticket_addr = handle.endpoint.addr();
+    if let Some(relay) = iroh.relay.as_deref() {
+        ticket_addr =
+            ticket_addr.with_relay_url(RelayUrl::from_str(relay).map_err(|error| {
+                server::Error::InvalidRequest(format!("invalid --relay: {error}"))
+            })?);
+    }
+    let ticket = EndpointTicket::from(ticket_addr);
     println!("server backend ready: {summary:?}");
     println!("endpoint={endpoint}");
+    println!("ticket={ticket}");
     if let Some(relay) = iroh.relay.as_deref() {
         println!("relay={relay}");
     }

@@ -108,6 +108,13 @@ pub struct CoverArtBytes {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ResolvedId {
+    Artist(Artist),
+    Album(Album),
+    Track(Track),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BackendRequest {
     GetLibrarySummary,
     ListArtists,
@@ -116,6 +123,7 @@ pub enum BackendRequest {
     GetAlbumTracks { album_id: AlbumId },
     GetTrack { track_id: TrackId },
     GetCoverArt { cover_art_id: CoverArtId },
+    ResolveId { id: String },
     Search { query: SearchQuery },
     OpenStream { track_id: TrackId },
 }
@@ -136,6 +144,7 @@ pub enum BackendResponse {
     Tracks(Vec<Track>),
     Track(Track),
     CoverArt(CoverArtBytes),
+    ResolvedId(ResolvedId),
     SearchResults {
         artists: Vec<Artist>,
         albums: Vec<Album>,

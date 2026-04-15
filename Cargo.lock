@@ -1704,6 +1704,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-tickets"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab64bac4bb573b9cfd2142bd2876ed65ca792efbc4398361a4ee51a0f9afbed6"
+dependencies = [
+ "data-encoding",
+ "derive_more",
+ "iroh-base",
+ "n0-error",
+ "postcard",
+ "serde",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3038,6 +3052,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "iroh",
+ "iroh-tickets",
  "lofty",
  "notify",
  "protocol",
@@ -3222,6 +3237,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "iroh",
+ "iroh-tickets",
  "md5",
  "protocol",
  "serde",

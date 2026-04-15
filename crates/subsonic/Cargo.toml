@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum.workspace = true
 iroh.workspace = true
+iroh-tickets.workspace = true
 md5.workspace = true
 protocol = { path = "../protocol" }
 serde.workspace = true

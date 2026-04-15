@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 iroh.workspace = true
+iroh-tickets.workspace = true
 lofty.workspace = true
 notify.workspace = true
 protocol = { path = "../protocol" }

@@ -11,8 +11,8 @@ use crate::index::{CoverArtSource, LibraryIndex};
 use crate::lastfm::LastfmClient;
 use crate::scanner::scan_music_dir;
 use protocol::{
-    AlbumId, ArtistId, BackendRequest, BackendResponse, CoverArtBytes, CoverArtId, SearchQuery,
-    StreamDescriptor, TrackId,
+    AlbumId, ArtistId, BackendRequest, BackendResponse, CoverArtBytes, CoverArtId, ResolvedId,
+    SearchQuery, StreamDescriptor, TrackId,
 };
 
 pub struct MusicServer {
@@ -70,6 +70,7 @@ impl MusicServer {
             BackendRequest::GetCoverArt { cover_art_id } => {
                 self.get_cover_art(&library, cover_art_id)
             }
+            BackendRequest::ResolveId { id } => Self::resolve_id(&library, id),
             BackendRequest::Search { query } => Self::search(&library, query),
             BackendRequest::OpenStream { track_id } => self.open_stream(&library, track_id),
         }
@@ -117,6 +118,31 @@ impl MusicServer {
             .cloned()
             .ok_or_else(|| Error::NotFound("track", track_id.0))?;
         Ok(BackendResponse::Track(track))
+    }
+
+    fn resolve_id(library: &LibraryIndex, id: String) -> Result<BackendResponse> {
+        let album_id = AlbumId(id.clone());
+        if let Some(album) = library.albums.get(&album_id) {
+            return Ok(BackendResponse::ResolvedId(ResolvedId::Album(
+                album.clone(),
+            )));
+        }
+
+        let artist_id = ArtistId(id.clone());
+        if let Some(artist) = library.artists.get(&artist_id) {
+            return Ok(BackendResponse::ResolvedId(ResolvedId::Artist(
+                artist.clone(),
+            )));
+        }
+
+        let track_id = TrackId(id.clone());
+        if let Some(track) = library.tracks.get(&track_id) {
+            return Ok(BackendResponse::ResolvedId(ResolvedId::Track(
+                track.clone(),
+            )));
+        }
+
+        Err(Error::NotFound("id", id))
     }
 
     fn search(library: &LibraryIndex, query: SearchQuery) -> Result<BackendResponse> {

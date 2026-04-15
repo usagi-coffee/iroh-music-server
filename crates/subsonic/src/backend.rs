@@ -1,4 +1,4 @@
-use iroh::{EndpointId, RelayUrl};
+use iroh::{EndpointAddr, EndpointId, RelayUrl};
 use protocol::{
     BackendRequest, BackendResponse, CoverArtId, SearchQuery, StreamDescriptor, TrackId,
 };
@@ -12,6 +12,7 @@ pub trait Backend {
     async fn album(&self, album_id: &str) -> Result<BackendResponse>;
     async fn album_tracks(&self, album_id: &str) -> Result<BackendResponse>;
     async fn track(&self, track_id: &str) -> Result<BackendResponse>;
+    async fn resolve_id(&self, id: &str) -> Result<BackendResponse>;
     async fn cover_art(&self, cover_art_id: &str) -> Result<BackendResponse>;
     async fn search(&self, term: &str, limit: usize) -> Result<BackendResponse>;
     async fn stream(&self, track_id: &str) -> Result<(server::StreamDescriptor, Vec<u8>)>;
@@ -25,6 +26,11 @@ pub struct RemoteBackend {
 impl RemoteBackend {
     pub async fn connect(endpoint: EndpointId, relay: Option<RelayUrl>) -> Result<Self> {
         let client = RemoteClient::connect(endpoint, relay).await?;
+        Ok(Self { client })
+    }
+
+    pub async fn connect_addr(addr: EndpointAddr) -> Result<Self> {
+        let client = RemoteClient::connect_addr(addr).await?;
         Ok(Self { client })
     }
 }
@@ -67,6 +73,12 @@ impl Backend for RemoteBackend {
             .request(BackendRequest::GetTrack {
                 track_id: TrackId(track_id.to_string()),
             })
+            .await
+    }
+
+    async fn resolve_id(&self, id: &str) -> Result<BackendResponse> {
+        self.client
+            .request(BackendRequest::ResolveId { id: id.to_string() })
             .await
     }
 

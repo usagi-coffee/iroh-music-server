@@ -7,7 +7,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use iroh::{EndpointId, RelayUrl};
+use iroh::{EndpointAddr, EndpointId, RelayUrl};
+use iroh_tickets::endpoint::EndpointTicket;
 use serde::Deserialize;
 use subsonic::{
     Backend, RemoteBackend, RequestContext, SubsonicConfig, SubsonicResponse, handle_request,
@@ -49,26 +50,16 @@ async fn run() -> server::Result<()> {
     }
 
     let config = parse_config(args.into_iter())?;
-    let endpoint = EndpointId::from_str(&config.endpoint)
-        .map_err(|error| server::Error::InvalidRequest(format!("invalid --endpoint: {error}")))?;
-    let relay =
-        match config.relay.as_deref() {
-            Some(relay) => Some(RelayUrl::from_str(relay).map_err(|error| {
-                server::Error::InvalidRequest(format!("invalid --relay: {error}"))
-            })?),
-            None => None,
-        };
+    let relay = parse_relay(config.relay.as_deref())?;
+    let backend_addr = backend_addr_from_config(&config, relay.clone())?;
     eprintln!(
-        "[subsonic] startup bind={} endpoint={} relay={}",
+        "[subsonic] startup bind={} backend={} relay={}",
         config.bind,
-        config.endpoint,
-        relay
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "<none>".to_string())
+        backend_addr.id,
+        relays_for_log(&backend_addr)
     );
     eprintln!("[subsonic] connecting backend");
-    let backend = RemoteBackend::connect(endpoint, relay).await?;
+    let backend = RemoteBackend::connect_addr(backend_addr).await?;
     eprintln!("[subsonic] backend transport connected, probing summary");
     let summary = backend.summary().await?;
     eprintln!("[subsonic] backend summary probe ok: {summary:?}");
@@ -234,6 +225,7 @@ fn parse_config(args: impl Iterator<Item = String>) -> server::Result<SubsonicCo
         match arg.as_str() {
             "--bind" => config.bind = args.next().ok_or_else(missing_value)?,
             "--endpoint" => config.endpoint = args.next().ok_or_else(missing_value)?,
+            "--ticket" => config.ticket = Some(args.next().ok_or_else(missing_value)?),
             "--relay" => config.relay = Some(args.next().ok_or_else(missing_value)?),
             "--username" => config.username = args.next().ok_or_else(missing_value)?,
             "--password" => config.password = args.next().ok_or_else(missing_value)?,
@@ -244,12 +236,71 @@ fn parse_config(args: impl Iterator<Item = String>) -> server::Result<SubsonicCo
             }
         }
     }
-    if config.endpoint.trim().is_empty() {
+    if config.endpoint.trim().is_empty()
+        && config
+            .ticket
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
         return Err(server::Error::InvalidRequest(
-            "expected --endpoint".to_string(),
+            "expected --endpoint or --ticket".to_string(),
         ));
     }
     Ok(config)
+}
+
+fn parse_relay(relay: Option<&str>) -> server::Result<Option<RelayUrl>> {
+    relay
+        .map(|relay| {
+            RelayUrl::from_str(relay)
+                .map_err(|error| server::Error::InvalidRequest(format!("invalid --relay: {error}")))
+        })
+        .transpose()
+}
+
+fn backend_addr_from_config(
+    config: &SubsonicConfig,
+    relay: Option<RelayUrl>,
+) -> server::Result<EndpointAddr> {
+    if let Some(ticket) = config
+        .ticket
+        .as_deref()
+        .filter(|ticket| !ticket.trim().is_empty())
+    {
+        let ticket = EndpointTicket::from_str(ticket)
+            .map_err(|error| server::Error::InvalidRequest(format!("invalid --ticket: {error}")))?;
+        let mut addr: EndpointAddr = ticket.into();
+        if let Some(relay) = relay {
+            addr = addr.with_relay_url(relay);
+        }
+        return Ok(addr);
+    }
+
+    let endpoint = EndpointId::from_str(&config.endpoint)
+        .map_err(|error| server::Error::InvalidRequest(format!("invalid --endpoint: {error}")))?;
+    let addr = match relay {
+        Some(relay) => EndpointAddr::new(endpoint).with_relay_url(relay),
+        None => EndpointAddr::new(endpoint),
+    };
+    Ok(addr)
+}
+
+fn relays_for_log(addr: &EndpointAddr) -> String {
+    let relays = addr
+        .addrs
+        .iter()
+        .filter_map(|addr| match addr {
+            iroh::TransportAddr::Relay(relay) => Some(relay.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if relays.is_empty() {
+        "<none>".to_string()
+    } else {
+        relays.join(",")
+    }
 }
 
 fn missing_value() -> server::Error {
@@ -259,6 +310,6 @@ fn missing_value() -> server::Error {
 fn print_usage() {
     println!("usage:");
     println!(
-        "  subsonic --bind 127.0.0.1:4040 --endpoint <server-endpoint-id> [--relay <relay-url>]"
+        "  subsonic --bind 127.0.0.1:4040 (--ticket <endpoint-ticket> | --endpoint <server-endpoint-id> [--relay <relay-url>])"
     );
 }

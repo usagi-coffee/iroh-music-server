@@ -68,9 +68,7 @@ pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
                 library_files.audio_files.len(),
                 cache_hits,
                 cache_misses,
-                path.strip_prefix(root)
-                    .unwrap_or(path)
-                    .display()
+                path.strip_prefix(root).unwrap_or(path).display()
             );
         }
     }

@@ -13,7 +13,8 @@ pub use index::{CoverArtSource, LibraryIndex};
 pub use iroh_rpc::{IrohConfig, RemoteClient, ServerHandle, spawn_iroh_server};
 pub use protocol::{
     Album, AlbumId, AlbumMetadata, Artist, ArtistId, BackendRequest, BackendResponse,
-    CoverArtBytes, CoverArtId, IROH_ALPN, SearchQuery, StreamDescriptor, Track, TrackId,
+    CoverArtBytes, CoverArtId, IROH_ALPN, ResolvedId, SearchQuery, StreamDescriptor, Track,
+    TrackId,
 };
 pub use scanner::scan_music_dir;
 pub use server::MusicServer;
