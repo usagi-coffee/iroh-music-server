@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -215,22 +216,71 @@ fn spawn_library_watcher(
     let watch_task = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
-                Ok(_) => match scan_music_dir(&music_dir) {
-                    Ok(updated) => {
-                        let mut updated = updated;
-                        enrich_with_lastfm(&mut updated, lastfm_api_key.as_deref());
-                        if let Ok(mut current) = library.write() {
-                            *current = updated;
+                Ok(event) => {
+                    if !event_needs_rescan(&event) {
+                        continue;
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    while let Ok(event) = rx.try_recv() {
+                        match event {
+                            Ok(event) if !event_needs_rescan(&event) => {}
+                            Ok(_) => {}
+                            Err(error) => eprintln!("watch error: {error}"),
                         }
                     }
-                    Err(error) => eprintln!("failed to refresh library index: {error}"),
-                },
+
+                    match scan_music_dir(&music_dir) {
+                        Ok(updated) => {
+                            let mut updated = updated;
+                            enrich_with_lastfm(&mut updated, lastfm_api_key.as_deref());
+                            if let Ok(mut current) = library.write() {
+                                *current = updated;
+                            }
+                        }
+                        Err(error) => eprintln!("failed to refresh library index: {error}"),
+                    }
+                }
                 Err(error) => eprintln!("watch error: {error}"),
             }
         }
     });
 
     Ok((watcher, watch_task))
+}
+
+fn event_needs_rescan(event: &Event) -> bool {
+    event
+        .paths
+        .iter()
+        .any(|path| is_library_relevant_path(path.as_path()))
+}
+
+fn is_library_relevant_path(path: &std::path::Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    if matches!(
+        file_name,
+        "iroh-music-server.db"
+            | "iroh-music-server.db-journal"
+            | "iroh-music-server.db-wal"
+            | "iroh-music-server.db-shm"
+    ) {
+        return false;
+    }
+
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase()),
+        Some(ext)
+            if matches!(
+                ext.as_str(),
+                "mp3" | "flac" | "ogg" | "opus" | "m4a" | "wav" | "jpg" | "jpeg" | "png" | "webp" | "gif"
+            )
+    )
 }
 
 fn enrich_with_lastfm(library: &mut LibraryIndex, api_key: Option<&str>) {

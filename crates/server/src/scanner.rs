@@ -7,28 +7,66 @@ use crate::index::{CoverArtSource, LibraryIndex};
 use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
 use protocol::{Album, AlbumId, Artist, ArtistId, CoverArtId, Track, TrackId};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+
+const CACHE_DB_FILE: &str = "iroh-music-server.db";
+const SCAN_PROGRESS_BATCH_SIZE: usize = 100;
 
 pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {
     if !root.is_dir() {
         return Err(Error::InvalidMusicDir(root.to_path_buf()));
     }
 
-    let mut builder = LibraryBuilder::default();
-    visit_dir(root, root, &mut builder)?;
+    let audio_files = collect_audio_files(root)?;
+    eprintln!(
+        "[scanner] scan start root={} tracks={} cache={}",
+        root.display(),
+        audio_files.len(),
+        root.join(CACHE_DB_FILE).display()
+    );
+
+    let cache = ScanCache::open(root)?;
+    let mut builder = LibraryBuilder::new(cache);
+    for (index, path) in audio_files.iter().enumerate() {
+        builder.add_track(root, path)?;
+        let scanned = index + 1;
+        if scanned % SCAN_PROGRESS_BATCH_SIZE == 0 || scanned == audio_files.len() {
+            eprintln!(
+                "[scanner] scan progress tracks={}/{} cache_hits={} cache_misses={}",
+                scanned,
+                audio_files.len(),
+                builder.cache_hits,
+                builder.cache_misses
+            );
+        }
+    }
+    builder.prune_cache()?;
     Ok(builder.build())
 }
 
-fn visit_dir(root: &Path, dir: &Path, builder: &mut LibraryBuilder) -> Result<()> {
+fn collect_audio_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    visit_dir(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn visit_dir(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            visit_dir(root, &path, builder)?;
+            visit_dir(root, &path, files)?;
+            continue;
+        }
+
+        if path.file_name().and_then(|name| name.to_str()) == Some(CACHE_DB_FILE) {
             continue;
         }
 
         if is_audio_file(&path) {
-            builder.add_track(root, &path)?;
+            files.push(path);
         }
     }
 
@@ -44,9 +82,14 @@ fn is_audio_file(path: &Path) -> bool {
 
 #[derive(Default)]
 struct LibraryBuilder {
+    cache: ScanCache,
+    cache_hits: usize,
+    cache_misses: usize,
+    seen_audio_paths: Vec<String>,
     artists_by_name: BTreeMap<String, ArtistId>,
     albums_by_key: BTreeMap<(String, String), AlbumId>,
     cover_art_by_path: BTreeMap<PathBuf, CoverArtId>,
+    sidecar_by_dir: BTreeMap<PathBuf, Option<PathBuf>>,
     artists: BTreeMap<ArtistId, Artist>,
     albums: BTreeMap<AlbumId, Album>,
     tracks: BTreeMap<TrackId, Track>,
@@ -54,11 +97,21 @@ struct LibraryBuilder {
 }
 
 impl LibraryBuilder {
+    fn new(cache: ScanCache) -> Self {
+        Self {
+            cache,
+            ..Self::default()
+        }
+    }
+
     fn add_track(&mut self, root: &Path, path: &Path) -> Result<()> {
         let relative_path = path.strip_prefix(root).map(PathBuf::from).map_err(|_| {
             Error::InvalidRequest(format!("path outside music root: {}", path.display()))
         })?;
+        let relative_path_string = relative_path.to_string_lossy().into_owned();
         let metadata = fs::metadata(path)?;
+        let modified_unix = modified_unix(&metadata)?;
+        self.seen_audio_paths.push(relative_path_string.clone());
 
         let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_path);
         let file_name = relative_path
@@ -66,13 +119,33 @@ impl LibraryBuilder {
             .and_then(|name| name.to_str())
             .unwrap_or("Unknown Track");
         let (fallback_track_number, fallback_title) = parse_track_name(file_name);
-        let tags = read_track_tags(
-            path,
-            fallback_artist,
-            fallback_album,
-            fallback_title,
-            fallback_track_number,
-        );
+        let tags = match self.cache.load_track_tags(
+            &relative_path_string,
+            metadata.len(),
+            modified_unix,
+        )? {
+            Some(tags) => {
+                self.cache_hits += 1;
+                tags
+            }
+            None => {
+                self.cache_misses += 1;
+                let tags = read_track_tags(
+                    path,
+                    fallback_artist,
+                    fallback_album,
+                    fallback_title,
+                    fallback_track_number,
+                );
+                self.cache.store_track_tags(
+                    &relative_path_string,
+                    metadata.len(),
+                    modified_unix,
+                    &tags,
+                )?;
+                tags
+            }
+        };
 
         let album_artist = tags
             .album_artist
@@ -185,7 +258,15 @@ impl LibraryBuilder {
         let Some(parent) = track_path.parent() else {
             return Ok(None);
         };
-        let Some(sidecar) = find_sidecar_image(parent)? else {
+        let sidecar = if let Some(cached) = self.sidecar_by_dir.get(parent) {
+            cached.clone()
+        } else {
+            let discovered = find_sidecar_image(parent)?;
+            self.sidecar_by_dir
+                .insert(parent.to_path_buf(), discovered.clone());
+            discovered
+        };
+        let Some(sidecar) = sidecar else {
             return Ok(None);
         };
         let relative_path = sidecar.strip_prefix(root).map(PathBuf::from).map_err(|_| {
@@ -211,7 +292,20 @@ impl LibraryBuilder {
         Ok(Some(id))
     }
 
+    fn prune_cache(&mut self) -> Result<()> {
+        self.cache.prune_missing(&self.seen_audio_paths)
+    }
+
     fn build(self) -> LibraryIndex {
+        eprintln!(
+            "[scanner] scan complete artists={} albums={} tracks={} cover_arts={} cache_hits={} cache_misses={}",
+            self.artists.len(),
+            self.albums.len(),
+            self.tracks.len(),
+            self.cover_arts.len(),
+            self.cache_hits,
+            self.cache_misses
+        );
         LibraryIndex {
             artists: self.artists,
             albums: self.albums,
@@ -221,7 +315,7 @@ impl LibraryBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrackTags {
     title: String,
     artist: String,
@@ -240,6 +334,127 @@ struct TrackTags {
     musicbrainz_recording_id: Option<String>,
     musicbrainz_album_id: Option<String>,
     musicbrainz_release_group_id: Option<String>,
+}
+
+struct ScanCache {
+    conn: Connection,
+}
+
+impl Default for ScanCache {
+    fn default() -> Self {
+        Self {
+            conn: Connection::open_in_memory().expect("in-memory sqlite cache"),
+        }
+    }
+}
+
+impl ScanCache {
+    fn open(root: &Path) -> Result<Self> {
+        let conn = Connection::open(root.join(CACHE_DB_FILE))?;
+        let cache = Self { conn };
+        cache.migrate()?;
+        Ok(cache)
+    }
+
+    fn migrate(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r#"
+            PRAGMA synchronous = NORMAL;
+
+            CREATE TABLE IF NOT EXISTS track_tags (
+                relative_path TEXT PRIMARY KEY NOT NULL,
+                file_size INTEGER NOT NULL,
+                modified_unix INTEGER NOT NULL,
+                tags_json TEXT NOT NULL,
+                updated_unix INTEGER NOT NULL
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
+    fn load_track_tags(
+        &self,
+        relative_path: &str,
+        file_size: u64,
+        modified_unix: i64,
+    ) -> Result<Option<TrackTags>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT file_size, modified_unix, tags_json FROM track_tags WHERE relative_path = ?1",
+                params![relative_path],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((cached_size, cached_modified, tags_json)) = row else {
+            return Ok(None);
+        };
+
+        if cached_size != i64::try_from(file_size).unwrap_or(i64::MAX)
+            || cached_modified != modified_unix
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(serde_json::from_str(&tags_json)?))
+    }
+
+    fn store_track_tags(
+        &self,
+        relative_path: &str,
+        file_size: u64,
+        modified_unix: i64,
+        tags: &TrackTags,
+    ) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO track_tags (relative_path, file_size, modified_unix, tags_json, updated_unix)
+            VALUES (?1, ?2, ?3, ?4, unixepoch())
+            ON CONFLICT(relative_path) DO UPDATE SET
+                file_size = excluded.file_size,
+                modified_unix = excluded.modified_unix,
+                tags_json = excluded.tags_json,
+                updated_unix = excluded.updated_unix
+            "#,
+            params![
+                relative_path,
+                i64::try_from(file_size).unwrap_or(i64::MAX),
+                modified_unix,
+                serde_json::to_string(tags)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn prune_missing(&mut self, seen_audio_paths: &[String]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("CREATE TEMP TABLE IF NOT EXISTS seen_audio_paths (relative_path TEXT PRIMARY KEY NOT NULL)", [])?;
+        tx.execute("DELETE FROM seen_audio_paths", [])?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT OR IGNORE INTO seen_audio_paths (relative_path) VALUES (?1)")?;
+            for relative_path in seen_audio_paths {
+                stmt.execute(params![relative_path])?;
+            }
+        }
+        let removed = tx.execute(
+            "DELETE FROM track_tags WHERE relative_path NOT IN (SELECT relative_path FROM seen_audio_paths)",
+            [],
+        )?;
+        tx.commit()?;
+        if removed > 0 {
+            eprintln!("[scanner] pruned stale cache rows={removed}");
+        }
+        Ok(())
+    }
 }
 
 fn read_track_tags(
@@ -449,6 +664,16 @@ fn find_sidecar_image(dir: &Path) -> Result<Option<PathBuf>> {
     Ok(images.into_iter().next())
 }
 
+fn modified_unix(metadata: &fs::Metadata) -> Result<i64> {
+    let modified = metadata.modified()?;
+    let duration = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            Error::InvalidRequest(format!("file modified before unix epoch: {error}"))
+        })?;
+    Ok(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+}
+
 fn detect_content_type(path: &Path) -> String {
     match path
         .extension()
@@ -517,7 +742,7 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::scan_music_dir;
+    use super::{CACHE_DB_FILE, scan_music_dir};
 
     #[test]
     fn single_artist_album_folder_scans_as_one_album_with_cover_art() {
@@ -547,6 +772,12 @@ mod tests {
         assert_eq!(album.artist, "Yunomi");
         assert_eq!(album.title, "Oedo Controller");
         assert!(album.cover_art_id.is_some());
+        assert!(root.join(CACHE_DB_FILE).is_file());
+
+        let cached_library = scan_music_dir(&root).expect("scan fixture library from cache");
+        assert_eq!(cached_library.artist_count(), 1);
+        assert_eq!(cached_library.album_count(), 1);
+        assert_eq!(cached_library.track_count(), 2);
 
         fs::remove_dir_all(root).expect("remove fixture library");
     }

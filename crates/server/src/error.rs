@@ -17,6 +17,8 @@ pub enum Error {
     Lofty(#[from] lofty::error::LoftyError),
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("iroh dial error: {0}")]
     Connect(#[from] iroh::endpoint::ConnectError),
     #[error("iroh connect error: {0}")]
