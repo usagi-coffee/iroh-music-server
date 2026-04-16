@@ -80,6 +80,8 @@ pub struct Track {
     pub musicbrainz_album_id: Option<String>,
     pub musicbrainz_release_group_id: Option<String>,
     pub cover_art_id: Option<CoverArtId>,
+    pub suffix: Option<String>,
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub relative_path: PathBuf,
     pub file_size: u64,
     pub modified_at: SystemTime,
@@ -95,6 +97,7 @@ pub struct SearchQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDescriptor {
     pub track_id: TrackId,
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub path: PathBuf,
     pub content_type: String,
     pub file_size: u64,

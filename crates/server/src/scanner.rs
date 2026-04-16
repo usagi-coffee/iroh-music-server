@@ -234,6 +234,10 @@ impl LibraryBuilder {
             musicbrainz_album_id: tags.musicbrainz_album_id.clone(),
             musicbrainz_release_group_id: tags.musicbrainz_release_group_id.clone(),
             cover_art_id: cover_art_id.clone(),
+            suffix: path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.to_ascii_lowercase()),
             relative_path,
             file_size: scanned.file_size,
             modified_at: scanned.modified_at,

@@ -335,7 +335,7 @@ fn map_track(
                 "duration": track.duration_seconds,
                 "bitRate": track.bitrate,
                 "size": track.file_size,
-                "suffix": track.relative_path.extension().and_then(|ext| ext.to_str()),
+                "suffix": track.suffix,
                 "genre": track.genres.first().cloned()
             }
         })))),
