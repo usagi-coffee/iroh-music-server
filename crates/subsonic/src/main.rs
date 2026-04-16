@@ -156,7 +156,10 @@ async fn rest_handler(
         }
         Err(error) => {
             eprintln!("[subsonic] request failed path={} error={error}", rest);
-            into_http_response(error_response(format, &format!("backend error: {error}")))
+            into_http_response(error_response(
+                format,
+                &format!("backend error on /rest/{rest}: {error}"),
+            ))
         }
     }
 }

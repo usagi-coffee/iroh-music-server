@@ -56,7 +56,10 @@ pub async fn handle_request(
             let track_id = query_value(&request, "id").unwrap_or_default();
             map_stream(backend.stream(track_id).await?)
         }
-        _ => Ok(error_response(format, "unsupported route")),
+        _ => Ok(error_response(
+            format,
+            &format!("unsupported route: {}", request.path),
+        )),
     }
 }
 
