@@ -9,6 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use client::{Error, IrohConfig, Result};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use iroh_tickets::endpoint::EndpointTicket;
 use serde::Deserialize;
@@ -47,7 +48,7 @@ struct RawQuery {
     query: Option<String>,
 }
 
-async fn run() -> server::Result<()> {
+async fn run() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
         print_usage();
@@ -79,9 +80,7 @@ async fn run() -> server::Result<()> {
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("subsonic facade listening on http://{bind}");
-    axum::serve(listener, app)
-        .await
-        .map_err(server::Error::from)?;
+    axum::serve(listener, app).await.map_err(Error::from)?;
 
     Ok(())
 }
@@ -100,7 +99,7 @@ async fn connect_backend_with_retry(
         );
         match RemoteBackend::connect_addr_with_config(
             backend_addr.clone(),
-            server::IrohConfig {
+            IrohConfig {
                 secret: config.secret.clone(),
                 relay: None,
                 peers: Default::default(),
@@ -340,7 +339,7 @@ fn response_summary(response: &SubsonicResponse) -> String {
     }
 }
 
-fn parse_config(args: impl Iterator<Item = String>) -> server::Result<SubsonicConfig> {
+fn parse_config(args: impl Iterator<Item = String>) -> Result<SubsonicConfig> {
     let mut config = SubsonicConfig::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -353,9 +352,7 @@ fn parse_config(args: impl Iterator<Item = String>) -> server::Result<SubsonicCo
             "--username" => config.username = args.next().ok_or_else(missing_value)?,
             "--password" => config.password = args.next().ok_or_else(missing_value)?,
             other => {
-                return Err(server::Error::InvalidRequest(format!(
-                    "unknown argument: {other}"
-                )));
+                return Err(Error::InvalidRequest(format!("unknown argument: {other}")));
             }
         }
     }
@@ -367,22 +364,22 @@ fn parse_config(args: impl Iterator<Item = String>) -> server::Result<SubsonicCo
             .trim()
             .is_empty()
     {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "expected --endpoint or --ticket".to_string(),
         ));
     }
     if let Some(secret) = &config.secret {
         SecretKey::from_str(secret)
-            .map_err(|error| server::Error::InvalidRequest(format!("invalid --secret: {error}")))?;
+            .map_err(|error| Error::InvalidRequest(format!("invalid --secret: {error}")))?;
     }
     Ok(config)
 }
 
-fn parse_relay(relay: Option<&str>) -> server::Result<Option<RelayUrl>> {
+fn parse_relay(relay: Option<&str>) -> Result<Option<RelayUrl>> {
     relay
         .map(|relay| {
             RelayUrl::from_str(relay)
-                .map_err(|error| server::Error::InvalidRequest(format!("invalid --relay: {error}")))
+                .map_err(|error| Error::InvalidRequest(format!("invalid --relay: {error}")))
         })
         .transpose()
 }
@@ -390,14 +387,14 @@ fn parse_relay(relay: Option<&str>) -> server::Result<Option<RelayUrl>> {
 fn backend_addr_from_config(
     config: &SubsonicConfig,
     relay: Option<RelayUrl>,
-) -> server::Result<EndpointAddr> {
+) -> Result<EndpointAddr> {
     if let Some(ticket) = config
         .ticket
         .as_deref()
         .filter(|ticket| !ticket.trim().is_empty())
     {
         let ticket = EndpointTicket::from_str(ticket)
-            .map_err(|error| server::Error::InvalidRequest(format!("invalid --ticket: {error}")))?;
+            .map_err(|error| Error::InvalidRequest(format!("invalid --ticket: {error}")))?;
         let mut addr: EndpointAddr = ticket.into();
         if let Some(relay) = relay {
             addr = addr.with_relay_url(relay);
@@ -406,7 +403,7 @@ fn backend_addr_from_config(
     }
 
     let endpoint = EndpointId::from_str(&config.endpoint)
-        .map_err(|error| server::Error::InvalidRequest(format!("invalid --endpoint: {error}")))?;
+        .map_err(|error| Error::InvalidRequest(format!("invalid --endpoint: {error}")))?;
     let addr = match relay {
         Some(relay) => EndpointAddr::new(endpoint).with_relay_url(relay),
         None => EndpointAddr::new(endpoint),
@@ -430,8 +427,8 @@ fn relays_for_log(addr: &EndpointAddr) -> String {
     }
 }
 
-fn missing_value() -> server::Error {
-    server::Error::InvalidRequest("missing value for flag".to_string())
+fn missing_value() -> Error {
+    Error::InvalidRequest("missing value for flag".to_string())
 }
 
 fn print_usage() {

@@ -340,6 +340,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "client"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "protocol",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3234,13 +3246,13 @@ name = "subsonic"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "client",
  "iroh",
  "iroh-tickets",
  "md5",
  "protocol",
  "serde",
  "serde_json",
- "server",
  "tokio",
  "tokio-util",
 ]

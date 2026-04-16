@@ -1,5 +1,6 @@
+use client::{Error, Result};
+use protocol::{BackendResponse, ResolvedId, StreamDescriptor};
 use serde_json::json;
-use server::{BackendResponse, ResolvedId};
 
 use crate::auth::Credentials;
 use crate::backend::Backend;
@@ -17,7 +18,7 @@ pub async fn handle_request(
     config: &SubsonicConfig,
     backend: &impl Backend,
     request: RequestContext,
-) -> server::Result<SubsonicResponse> {
+) -> Result<SubsonicResponse> {
     let format = response_format(&request);
     let credentials = Credentials::from_request(&request);
     if !credentials.matches(config) {
@@ -76,10 +77,10 @@ async fn map_directory(
     format: ResponseFormat,
     backend: &impl Backend,
     id: &str,
-) -> server::Result<SubsonicResponse> {
+) -> Result<SubsonicResponse> {
     if id == "root" {
         let BackendResponse::Artists(artists) = backend.artists().await? else {
-            return Err(server::Error::InvalidRequest(
+            return Err(Error::InvalidRequest(
                 "backend returned unexpected response for getMusicDirectory root".to_string(),
             ));
         };
@@ -106,7 +107,7 @@ async fn map_directory(
     let resolved = match backend.resolve_id(id).await {
         Ok(BackendResponse::ResolvedId(resolved)) => resolved,
         Ok(_) => {
-            return Err(server::Error::InvalidRequest(
+            return Err(Error::InvalidRequest(
                 "backend returned unexpected response for ResolveId".to_string(),
             ));
         }
@@ -116,7 +117,7 @@ async fn map_directory(
     match resolved {
         ResolvedId::Album(album) => {
             let BackendResponse::Tracks(tracks) = backend.album_tracks(id).await? else {
-                return Err(server::Error::InvalidRequest(
+                return Err(Error::InvalidRequest(
                     "backend returned unexpected response for album tracks".to_string(),
                 ));
             };
@@ -143,7 +144,7 @@ async fn map_directory(
             let mut children = Vec::new();
             for album_id in &artist.album_ids {
                 let BackendResponse::Album(album) = backend.album(&album_id.0).await? else {
-                    return Err(server::Error::InvalidRequest(
+                    return Err(Error::InvalidRequest(
                         "backend returned unexpected response for artist album".to_string(),
                     ));
                 };
@@ -190,12 +191,9 @@ async fn map_directory(
     }
 }
 
-fn map_artists(
-    format: ResponseFormat,
-    response: BackendResponse,
-) -> server::Result<SubsonicResponse> {
+fn map_artists(format: ResponseFormat, response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::Artists(artists) = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for getArtists".to_string(),
         ));
     };
@@ -232,12 +230,9 @@ fn map_artists(
     }
 }
 
-fn map_indexes(
-    format: ResponseFormat,
-    response: BackendResponse,
-) -> server::Result<SubsonicResponse> {
+fn map_indexes(format: ResponseFormat, response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::Artists(artists) = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for getIndexes".to_string(),
         ));
     };
@@ -297,12 +292,9 @@ fn map_indexes(
     }
 }
 
-fn map_track(
-    format: ResponseFormat,
-    response: BackendResponse,
-) -> server::Result<SubsonicResponse> {
+fn map_track(format: ResponseFormat, response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::Track(track) = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for getSong".to_string(),
         ));
     };
@@ -354,12 +346,9 @@ fn map_track(
     }
 }
 
-fn map_album(
-    format: ResponseFormat,
-    response: BackendResponse,
-) -> server::Result<SubsonicResponse> {
+fn map_album(format: ResponseFormat, response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::Album(album) = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for getAlbum".to_string(),
         ));
     };
@@ -408,17 +397,14 @@ fn map_album(
     }
 }
 
-fn map_search(
-    format: ResponseFormat,
-    response: BackendResponse,
-) -> server::Result<SubsonicResponse> {
+fn map_search(format: ResponseFormat, response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::SearchResults {
         artists,
         albums,
         tracks,
     } = response
     else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for search3".to_string(),
         ));
     };
@@ -485,12 +471,9 @@ fn map_search(
     }
 }
 
-fn map_starred2(
-    format: ResponseFormat,
-    response: BackendResponse,
-) -> server::Result<SubsonicResponse> {
+fn map_starred2(format: ResponseFormat, response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::Starred(starred) = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for getStarred2".to_string(),
         ));
     };
@@ -558,8 +541,8 @@ fn map_starred2(
 }
 
 fn map_stream(
-    (stream, recv): (server::StreamDescriptor, iroh::endpoint::RecvStream),
-) -> server::Result<SubsonicResponse> {
+    (stream, recv): (StreamDescriptor, iroh::endpoint::RecvStream),
+) -> Result<SubsonicResponse> {
     Ok(SubsonicResponse::Stream {
         content_type: stream.content_type,
         content_length: Some(stream.file_size),
@@ -567,9 +550,9 @@ fn map_stream(
     })
 }
 
-fn map_cover_art(response: BackendResponse) -> server::Result<SubsonicResponse> {
+fn map_cover_art(response: BackendResponse) -> Result<SubsonicResponse> {
     let BackendResponse::CoverArt(cover_art) = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for getCoverArt".to_string(),
         ));
     };
@@ -586,12 +569,9 @@ fn map_cover_art(response: BackendResponse) -> server::Result<SubsonicResponse> 
     })
 }
 
-fn map_empty(
-    response: BackendResponse,
-    format: ResponseFormat,
-) -> server::Result<SubsonicResponse> {
+fn map_empty(response: BackendResponse, format: ResponseFormat) -> Result<SubsonicResponse> {
     let BackendResponse::Empty = response else {
-        return Err(server::Error::InvalidRequest(
+        return Err(Error::InvalidRequest(
             "backend returned unexpected response for empty result".to_string(),
         ));
     };

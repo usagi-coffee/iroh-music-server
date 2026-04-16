@@ -1,9 +1,8 @@
+use client::{Client, Error, Result};
 use iroh::endpoint::RecvStream;
-use iroh::{EndpointAddr, EndpointId, RelayUrl};
 use protocol::{
     BackendRequest, BackendResponse, CoverArtId, SearchQuery, StreamDescriptor, TrackId,
 };
-use server::{Error, IrohConfig, RemoteClient, Result};
 
 #[allow(async_fn_in_trait)]
 pub trait Backend {
@@ -18,97 +17,70 @@ pub trait Backend {
     async fn resolve_id(&self, id: &str) -> Result<BackendResponse>;
     async fn cover_art(&self, cover_art_id: &str) -> Result<BackendResponse>;
     async fn search(&self, term: &str, limit: usize) -> Result<BackendResponse>;
-    async fn stream(&self, track_id: &str) -> Result<(server::StreamDescriptor, RecvStream)>;
+    async fn stream(&self, track_id: &str) -> Result<(StreamDescriptor, RecvStream)>;
 }
 
-#[derive(Debug, Clone)]
-pub struct RemoteBackend {
-    client: RemoteClient,
-}
+pub type RemoteBackend = Client;
 
-impl RemoteBackend {
-    pub async fn connect(endpoint: EndpointId, relay: Option<RelayUrl>) -> Result<Self> {
-        let client = RemoteClient::connect(endpoint, relay).await?;
-        Ok(Self { client })
-    }
-
-    pub async fn connect_addr(addr: EndpointAddr) -> Result<Self> {
-        let client = RemoteClient::connect_addr(addr).await?;
-        Ok(Self { client })
-    }
-
-    pub async fn connect_addr_with_config(addr: EndpointAddr, config: IrohConfig) -> Result<Self> {
-        let client = RemoteClient::connect_addr_with_config(addr, config).await?;
-        Ok(Self { client })
-    }
-}
-
-impl Backend for RemoteBackend {
+impl Backend for Client {
     async fn summary(&self) -> Result<BackendResponse> {
-        self.client.request(BackendRequest::GetLibrarySummary).await
+        self.request(BackendRequest::GetLibrarySummary).await
     }
 
     async fn artists(&self) -> Result<BackendResponse> {
-        self.client.request(BackendRequest::ListArtists).await
+        self.request(BackendRequest::ListArtists).await
     }
 
     async fn starred(&self) -> Result<BackendResponse> {
-        self.client.request(BackendRequest::GetStarred).await
+        self.request(BackendRequest::GetStarred).await
     }
 
     async fn set_starred(&self, id: &str, starred: bool) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::SetStarred {
-                id: id.to_string(),
-                starred,
-            })
-            .await
+        self.request(BackendRequest::SetStarred {
+            id: id.to_string(),
+            starred,
+        })
+        .await
     }
 
     async fn artist(&self, artist_id: &str) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::GetArtist {
-                artist_id: protocol::ArtistId(artist_id.to_string()),
-            })
-            .await
+        self.request(BackendRequest::GetArtist {
+            artist_id: protocol::ArtistId(artist_id.to_string()),
+        })
+        .await
     }
 
     async fn album(&self, album_id: &str) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::GetAlbum {
-                album_id: protocol::AlbumId(album_id.to_string()),
-            })
-            .await
+        self.request(BackendRequest::GetAlbum {
+            album_id: protocol::AlbumId(album_id.to_string()),
+        })
+        .await
     }
 
     async fn album_tracks(&self, album_id: &str) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::GetAlbumTracks {
-                album_id: protocol::AlbumId(album_id.to_string()),
-            })
-            .await
+        self.request(BackendRequest::GetAlbumTracks {
+            album_id: protocol::AlbumId(album_id.to_string()),
+        })
+        .await
     }
 
     async fn track(&self, track_id: &str) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::GetTrack {
-                track_id: TrackId(track_id.to_string()),
-            })
-            .await
+        self.request(BackendRequest::GetTrack {
+            track_id: TrackId(track_id.to_string()),
+        })
+        .await
     }
 
     async fn resolve_id(&self, id: &str) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::ResolveId { id: id.to_string() })
+        self.request(BackendRequest::ResolveId { id: id.to_string() })
             .await
     }
 
     async fn cover_art(&self, cover_art_id: &str) -> Result<BackendResponse> {
-        self.client
-            .request(BackendRequest::GetCoverArt {
-                cover_art_id: CoverArtId(cover_art_id.to_string()),
-            })
-            .await
+        self.request(BackendRequest::GetCoverArt {
+            cover_art_id: CoverArtId(cover_art_id.to_string()),
+        })
+        .await
     }
 
     async fn search(&self, term: &str, limit: usize) -> Result<BackendResponse> {
@@ -118,17 +90,16 @@ impl Backend for RemoteBackend {
             ));
         }
 
-        self.client
-            .request(BackendRequest::Search {
-                query: SearchQuery {
-                    term: term.to_string(),
-                    limit,
-                },
-            })
-            .await
+        self.request(BackendRequest::Search {
+            query: SearchQuery {
+                term: term.to_string(),
+                limit,
+            },
+        })
+        .await
     }
 
     async fn stream(&self, track_id: &str) -> Result<(StreamDescriptor, RecvStream)> {
-        self.client.stream_open(TrackId(track_id.to_string())).await
+        self.stream_open(TrackId(track_id.to_string())).await
     }
 }
