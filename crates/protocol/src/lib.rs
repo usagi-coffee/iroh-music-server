@@ -95,6 +95,13 @@ pub struct SearchQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarredSet {
+    pub artists: Vec<Artist>,
+    pub albums: Vec<Album>,
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDescriptor {
     pub track_id: TrackId,
     #[serde(skip_serializing, skip_deserializing, default)]
@@ -121,6 +128,8 @@ pub enum ResolvedId {
 pub enum BackendRequest {
     GetLibrarySummary,
     ListArtists,
+    GetStarred,
+    SetStarred { id: String, starred: bool },
     GetArtist { artist_id: ArtistId },
     GetAlbum { album_id: AlbumId },
     GetAlbumTracks { album_id: AlbumId },
@@ -141,7 +150,9 @@ pub enum BackendResponse {
         album_count: usize,
         track_count: usize,
     },
+    Empty,
     Artists(Vec<Artist>),
+    Starred(StarredSet),
     Artist(Artist),
     Album(Album),
     Tracks(Vec<Track>),

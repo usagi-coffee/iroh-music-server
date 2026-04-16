@@ -1,6 +1,7 @@
 use std::env;
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -13,6 +14,9 @@ use serde::Deserialize;
 use subsonic::{
     Backend, RemoteBackend, RequestContext, SubsonicConfig, SubsonicResponse, handle_request,
 };
+
+const BACKEND_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const BACKEND_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -66,18 +70,7 @@ async fn run() -> server::Result<()> {
             "random"
         }
     );
-    let backend = RemoteBackend::connect_addr_with_config(
-        backend_addr,
-        server::IrohConfig {
-            secret: config.secret.clone(),
-            relay: None,
-            peers: Default::default(),
-        },
-    )
-    .await?;
-    eprintln!("[subsonic] backend transport connected, probing summary");
-    let summary = backend.summary().await?;
-    eprintln!("[subsonic] backend summary probe ok: {summary:?}");
+    let backend = connect_backend_with_retry(&config, backend_addr).await;
     let bind = config.bind.clone();
     let state = AppState { config, backend };
     let app = Router::new()
@@ -90,6 +83,61 @@ async fn run() -> server::Result<()> {
         .map_err(server::Error::from)?;
 
     Ok(())
+}
+
+async fn connect_backend_with_retry(
+    config: &SubsonicConfig,
+    backend_addr: EndpointAddr,
+) -> RemoteBackend {
+    let mut attempt = 0_u32;
+    let mut delay = BACKEND_RETRY_INITIAL_DELAY;
+
+    loop {
+        attempt = attempt.saturating_add(1);
+        eprintln!(
+            "[subsonic] backend connect attempt={} remote_endpoint={}",
+            attempt, backend_addr.id
+        );
+        match RemoteBackend::connect_addr_with_config(
+            backend_addr.clone(),
+            server::IrohConfig {
+                secret: config.secret.clone(),
+                relay: None,
+                peers: Default::default(),
+            },
+        )
+        .await
+        {
+            Ok(backend) => {
+                eprintln!("[subsonic] backend transport connected, probing summary");
+                match backend.summary().await {
+                    Ok(summary) => {
+                        eprintln!("[subsonic] backend summary probe ok: {summary:?}");
+                        return backend;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[subsonic] backend summary probe failed attempt={} error={} retry_in={}s",
+                            attempt,
+                            error,
+                            delay.as_secs()
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "[subsonic] backend connect failed attempt={} error={} retry_in={}s",
+                    attempt,
+                    error,
+                    delay.as_secs()
+                );
+            }
+        }
+
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(BACKEND_RETRY_MAX_DELAY);
+    }
 }
 
 async fn rest_handler(

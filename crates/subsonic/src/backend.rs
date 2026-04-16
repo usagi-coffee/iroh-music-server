@@ -8,6 +8,8 @@ use server::{Error, IrohConfig, RemoteClient, Result};
 pub trait Backend {
     async fn summary(&self) -> Result<BackendResponse>;
     async fn artists(&self) -> Result<BackendResponse>;
+    async fn starred(&self) -> Result<BackendResponse>;
+    async fn set_starred(&self, id: &str, starred: bool) -> Result<BackendResponse>;
     async fn artist(&self, artist_id: &str) -> Result<BackendResponse>;
     async fn album(&self, album_id: &str) -> Result<BackendResponse>;
     async fn album_tracks(&self, album_id: &str) -> Result<BackendResponse>;
@@ -47,6 +49,19 @@ impl Backend for RemoteBackend {
 
     async fn artists(&self) -> Result<BackendResponse> {
         self.client.request(BackendRequest::ListArtists).await
+    }
+
+    async fn starred(&self) -> Result<BackendResponse> {
+        self.client.request(BackendRequest::GetStarred).await
+    }
+
+    async fn set_starred(&self, id: &str, starred: bool) -> Result<BackendResponse> {
+        self.client
+            .request(BackendRequest::SetStarred {
+                id: id.to_string(),
+                starred,
+            })
+            .await
     }
 
     async fn artist(&self, artist_id: &str) -> Result<BackendResponse> {

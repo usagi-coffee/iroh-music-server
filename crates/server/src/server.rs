@@ -1,10 +1,12 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use notify::{
     Event, RecommendedWatcher, RecursiveMode, Watcher,
     event::{DataChange, EventKind, ModifyKind},
 };
+use rusqlite::{Connection, params};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -15,12 +17,15 @@ use crate::lastfm::LastfmClient;
 use crate::scanner::scan_music_dir;
 use protocol::{
     AlbumId, ArtistId, BackendRequest, BackendResponse, CoverArtBytes, CoverArtId, ResolvedId,
-    SearchQuery, StreamDescriptor, TrackId,
+    SearchQuery, StarredSet, StreamDescriptor, TrackId,
 };
+
+const STATE_DB_FILE: &str = "iroh-music-server.db";
 
 pub struct MusicServer {
     config: ServerConfig,
     library: Arc<RwLock<LibraryIndex>>,
+    starred_db: std::sync::Mutex<Connection>,
     _watcher: RecommendedWatcher,
     _watch_task: JoinHandle<()>,
 }
@@ -30,6 +35,7 @@ impl MusicServer {
         let mut initial_library = scan_music_dir(&config.music_dir)?;
         enrich_with_lastfm(&mut initial_library, config.lastfm_api_key.as_deref());
         let library = Arc::new(RwLock::new(initial_library));
+        let starred_db = open_state_db(&config.music_dir)?;
         let (watcher, watch_task) = spawn_library_watcher(
             config.music_dir.clone(),
             config.lastfm_api_key.clone(),
@@ -39,6 +45,7 @@ impl MusicServer {
         Ok(Self {
             config,
             library,
+            starred_db: std::sync::Mutex::new(starred_db),
             _watcher: watcher,
             _watch_task: watch_task,
         })
@@ -64,6 +71,8 @@ impl MusicServer {
             BackendRequest::ListArtists => Ok(BackendResponse::Artists(
                 library.artists.values().cloned().collect(),
             )),
+            BackendRequest::GetStarred => self.get_starred(&library),
+            BackendRequest::SetStarred { id, starred } => self.set_starred(&library, id, starred),
             BackendRequest::GetArtist { artist_id } => Self::get_artist(&library, artist_id),
             BackendRequest::GetAlbum { album_id } => Self::get_album(&library, album_id),
             BackendRequest::GetAlbumTracks { album_id } => {
@@ -86,6 +95,46 @@ impl MusicServer {
             .cloned()
             .ok_or_else(|| Error::NotFound("artist", artist_id.0))?;
         Ok(BackendResponse::Artist(artist))
+    }
+
+    fn get_starred(&self, library: &LibraryIndex) -> Result<BackendResponse> {
+        let conn = self.starred_db.lock().expect("starred db lock poisoned");
+        let mut stmt =
+            conn.prepare("SELECT id, kind FROM starred_items ORDER BY starred_unix DESC, id ASC")?;
+        let mut artists = Vec::new();
+        let mut albums = Vec::new();
+        let mut tracks = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows {
+            let (id, kind) = row?;
+            match kind.as_str() {
+                "artist" => {
+                    if let Some(artist) = library.artists.get(&ArtistId(id)) {
+                        artists.push(artist.clone());
+                    }
+                }
+                "album" => {
+                    if let Some(album) = library.albums.get(&AlbumId(id)) {
+                        albums.push(album.clone());
+                    }
+                }
+                "track" => {
+                    if let Some(track) = library.tracks.get(&TrackId(id)) {
+                        tracks.push(track.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(BackendResponse::Starred(StarredSet {
+            artists,
+            albums,
+            tracks,
+        }))
     }
 
     fn get_album(library: &LibraryIndex, album_id: AlbumId) -> Result<BackendResponse> {
@@ -121,6 +170,41 @@ impl MusicServer {
             .cloned()
             .ok_or_else(|| Error::NotFound("track", track_id.0))?;
         Ok(BackendResponse::Track(track))
+    }
+
+    fn set_starred(
+        &self,
+        library: &LibraryIndex,
+        id: String,
+        starred: bool,
+    ) -> Result<BackendResponse> {
+        let kind = if library.artists.contains_key(&ArtistId(id.clone())) {
+            "artist"
+        } else if library.albums.contains_key(&AlbumId(id.clone())) {
+            "album"
+        } else if library.tracks.contains_key(&TrackId(id.clone())) {
+            "track"
+        } else {
+            return Err(Error::NotFound("id", id));
+        };
+
+        let conn = self.starred_db.lock().expect("starred db lock poisoned");
+        if starred {
+            conn.execute(
+                r#"
+                INSERT INTO starred_items (id, kind, starred_unix)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(id) DO UPDATE SET
+                    kind = excluded.kind,
+                    starred_unix = excluded.starred_unix
+                "#,
+                params![id, kind, now_unix()],
+            )?;
+        } else {
+            conn.execute("DELETE FROM starred_items WHERE id = ?1", params![id])?;
+        }
+
+        Ok(BackendResponse::Empty)
     }
 
     fn resolve_id(library: &LibraryIndex, id: String) -> Result<BackendResponse> {
@@ -351,6 +435,29 @@ fn spawn_library_watcher(
     });
 
     Ok((watcher, watch_task))
+}
+
+fn open_state_db(root: &std::path::Path) -> Result<Connection> {
+    let conn = Connection::open(root.join(STATE_DB_FILE))?;
+    conn.execute_batch(
+        r#"
+        PRAGMA synchronous = NORMAL;
+
+        CREATE TABLE IF NOT EXISTS starred_items (
+            id TEXT PRIMARY KEY NOT NULL,
+            kind TEXT NOT NULL,
+            starred_unix INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    Ok(conn)
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 fn event_needs_rescan(event: &Event) -> bool {

@@ -47,11 +47,20 @@ pub async fn handle_request(
             eprintln!("[subsonic-cover] request getCoverArt id={}", cover_art_id);
             map_cover_art(backend.cover_art(cover_art_id).await?)
         }
+        "/rest/getStarred2" => map_starred2(format, backend.starred().await?),
         "/rest/search3" => {
             let term = query_value(&request, "query").unwrap_or_default();
             map_search(format, backend.search(term, 20).await?)
         }
         "/rest/scrobble" => Ok(empty_ok(format)),
+        "/rest/star" => {
+            let id = query_value(&request, "id").unwrap_or_default();
+            map_empty(backend.set_starred(id, true).await?, format)
+        }
+        "/rest/unstar" => {
+            let id = query_value(&request, "id").unwrap_or_default();
+            map_empty(backend.set_starred(id, false).await?, format)
+        }
         "/rest/stream" => {
             let track_id = query_value(&request, "id").unwrap_or_default();
             map_stream(backend.stream(track_id).await?)
@@ -507,6 +516,78 @@ fn map_search(
     }
 }
 
+fn map_starred2(
+    format: ResponseFormat,
+    response: BackendResponse,
+) -> server::Result<SubsonicResponse> {
+    let BackendResponse::Starred(starred) = response else {
+        return Err(server::Error::InvalidRequest(
+            "backend returned unexpected response for getStarred2".to_string(),
+        ));
+    };
+
+    match format {
+        ResponseFormat::Xml => {
+            let mut body = String::from("<starred2>");
+            for artist in starred.artists {
+                body.push_str(&format!(
+                    "<artist id=\"{}\" name=\"{}\" />",
+                    xml_escape(&artist.id.0),
+                    xml_escape(&artist.name)
+                ));
+            }
+            for album in starred.albums {
+                body.push_str(&format!(
+                    "<album id=\"{}\" name=\"{}\" artist=\"{}\"{} />",
+                    xml_escape(&album.id.0),
+                    xml_escape(&album.title),
+                    xml_escape(&album.artist),
+                    optional_attr(
+                        "coverArt",
+                        album.cover_art_id.as_ref().map(|id| id.0.as_str())
+                    )
+                ));
+            }
+            for track in starred.tracks {
+                body.push_str(&format!(
+                    "<song id=\"{}\" title=\"{}\" artist=\"{}\" album=\"{}\"{} />",
+                    xml_escape(&track.id.0),
+                    xml_escape(&track.title),
+                    xml_escape(&track.artist),
+                    xml_escape(&track.album),
+                    optional_attr(
+                        "coverArt",
+                        track.cover_art_id.as_ref().map(|id| id.0.as_str())
+                    )
+                ));
+            }
+            body.push_str("</starred2>");
+            Ok(SubsonicResponse::Xml(wrap_xml(&body)))
+        }
+        ResponseFormat::Json => Ok(SubsonicResponse::Json(wrap_json(json!({
+            "starred2": {
+                "artist": starred.artists.into_iter().map(|artist| json!({
+                    "id": artist.id.0,
+                    "name": artist.name
+                })).collect::<Vec<_>>(),
+                "album": starred.albums.into_iter().map(|album| json!({
+                    "id": album.id.0,
+                    "name": album.title,
+                    "artist": album.artist,
+                    "coverArt": album.cover_art_id.map(|id| id.0)
+                })).collect::<Vec<_>>(),
+                "song": starred.tracks.into_iter().map(|track| json!({
+                    "id": track.id.0,
+                    "title": track.title,
+                    "artist": track.artist,
+                    "album": track.album,
+                    "coverArt": track.cover_art_id.map(|id| id.0)
+                })).collect::<Vec<_>>()
+            }
+        })))),
+    }
+}
+
 fn map_stream(
     (stream, bytes): (server::StreamDescriptor, Vec<u8>),
 ) -> server::Result<SubsonicResponse> {
@@ -533,6 +614,18 @@ fn map_cover_art(response: BackendResponse) -> server::Result<SubsonicResponse> 
         content_type: cover_art.content_type,
         bytes: cover_art.bytes,
     })
+}
+
+fn map_empty(
+    response: BackendResponse,
+    format: ResponseFormat,
+) -> server::Result<SubsonicResponse> {
+    let BackendResponse::Empty = response else {
+        return Err(server::Error::InvalidRequest(
+            "backend returned unexpected response for empty result".to_string(),
+        ));
+    };
+    Ok(empty_ok(format))
 }
 
 fn map_license(format: ResponseFormat) -> SubsonicResponse {

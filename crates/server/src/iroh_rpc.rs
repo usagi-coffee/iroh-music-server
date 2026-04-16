@@ -495,6 +495,8 @@ fn request_name(request: &BackendRequest) -> &'static str {
     match request {
         BackendRequest::GetLibrarySummary => "GetLibrarySummary",
         BackendRequest::ListArtists => "ListArtists",
+        BackendRequest::GetStarred => "GetStarred",
+        BackendRequest::SetStarred { .. } => "SetStarred",
         BackendRequest::GetArtist { .. } => "GetArtist",
         BackendRequest::GetAlbum { .. } => "GetAlbum",
         BackendRequest::GetAlbumTracks { .. } => "GetAlbumTracks",
