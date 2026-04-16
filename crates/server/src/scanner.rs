@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const CACHE_DB_FILE: &str = "iroh-music-server.db";
+const CACHE_DB_FILE: &str = "iroh-fm.db";
 const SCAN_PROGRESS_BATCH_SIZE: usize = 100;
 
 pub fn scan_music_dir(root: &Path) -> Result<LibraryIndex> {

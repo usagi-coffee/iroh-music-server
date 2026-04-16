@@ -20,7 +20,7 @@ use protocol::{
     SearchQuery, StarredSet, StreamDescriptor, TrackId,
 };
 
-const STATE_DB_FILE: &str = "iroh-music-server.db";
+const STATE_DB_FILE: &str = "iroh-fm.db";
 
 pub struct MusicServer {
     config: ServerConfig,
@@ -487,7 +487,11 @@ fn is_library_relevant_path(path: &std::path::Path) -> bool {
 
     if matches!(
         file_name,
-        "iroh-music-server.db"
+        "iroh-fm.db"
+            | "iroh-fm.db-journal"
+            | "iroh-fm.db-wal"
+            | "iroh-fm.db-shm"
+            | "iroh-music-server.db"
             | "iroh-music-server.db-journal"
             | "iroh-music-server.db-wal"
             | "iroh-music-server.db-shm"
