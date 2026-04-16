@@ -647,6 +647,7 @@ struct TrackTags {
     musicbrainz_recording_id: Option<String>,
     musicbrainz_album_id: Option<String>,
     musicbrainz_release_group_id: Option<String>,
+    #[serde(default)]
     has_embedded_cover: bool,
 }
 
