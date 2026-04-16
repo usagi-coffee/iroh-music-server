@@ -211,29 +211,78 @@ impl MusicServer {
         library: &LibraryIndex,
         cover_art_id: CoverArtId,
     ) -> Result<BackendResponse> {
-        let source = library
-            .cover_arts
-            .get(&cover_art_id)
-            .ok_or_else(|| Error::NotFound("cover art", cover_art_id.0.clone()))?;
+        eprintln!("[server-cover] request cover_art_id={}", cover_art_id.0);
+        let source = library.cover_arts.get(&cover_art_id).ok_or_else(|| {
+            eprintln!(
+                "[server-cover] missing cover_art_id={} known_cover_arts={}",
+                cover_art_id.0,
+                library.cover_arts.len()
+            );
+            Error::NotFound("cover art", cover_art_id.0.clone())
+        })?;
 
         match source {
             CoverArtSource::Sidecar {
                 relative_path,
                 content_type,
             } => {
-                let bytes = std::fs::read(self.config.music_dir.join(relative_path))?;
+                let full_path = self.config.music_dir.join(relative_path);
+                eprintln!(
+                    "[server-cover] source=sidecar cover_art_id={} path={} content_type={}",
+                    cover_art_id.0,
+                    full_path.display(),
+                    content_type
+                );
+                let bytes = match std::fs::read(&full_path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        eprintln!(
+                            "[server-cover] read failed cover_art_id={} path={} error={}",
+                            cover_art_id.0,
+                            full_path.display(),
+                            error
+                        );
+                        return Err(error.into());
+                    }
+                };
+                eprintln!(
+                    "[server-cover] served cover_art_id={} bytes={} content_type={}",
+                    cover_art_id.0,
+                    bytes.len(),
+                    content_type
+                );
                 Ok(BackendResponse::CoverArt(CoverArtBytes {
                     cover_art_id,
                     content_type: content_type.clone(),
                     bytes,
                 }))
             }
-            CoverArtSource::Embedded { track_id } => Err(Error::InvalidRequest(format!(
-                "embedded cover art extraction is not implemented for track {}",
-                track_id.0
-            ))),
+            CoverArtSource::Embedded { track_id } => {
+                eprintln!(
+                    "[server-cover] source=embedded unsupported cover_art_id={} track_id={}",
+                    cover_art_id.0, track_id.0
+                );
+                Err(Error::InvalidRequest(format!(
+                    "embedded cover art extraction is not implemented for track {}",
+                    track_id.0
+                )))
+            }
             CoverArtSource::External { url } => {
-                let response = reqwest::blocking::get(url)?.error_for_status()?;
+                eprintln!(
+                    "[server-cover] source=external cover_art_id={} url={}",
+                    cover_art_id.0, url
+                );
+                let response = match reqwest::blocking::get(url) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        eprintln!(
+                            "[server-cover] external fetch failed cover_art_id={} url={} error={}",
+                            cover_art_id.0, url, error
+                        );
+                        return Err(error.into());
+                    }
+                }
+                .error_for_status()?;
                 let content_type = response
                     .headers()
                     .get(reqwest::header::CONTENT_TYPE)
@@ -241,6 +290,12 @@ impl MusicServer {
                     .unwrap_or("application/octet-stream")
                     .to_string();
                 let bytes = response.bytes()?.to_vec();
+                eprintln!(
+                    "[server-cover] served cover_art_id={} bytes={} content_type={} source=external",
+                    cover_art_id.0,
+                    bytes.len(),
+                    content_type
+                );
                 Ok(BackendResponse::CoverArt(CoverArtBytes {
                     cover_art_id,
                     content_type,

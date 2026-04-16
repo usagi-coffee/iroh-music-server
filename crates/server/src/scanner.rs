@@ -326,6 +326,13 @@ impl LibraryBuilder {
         let id = CoverArtId(slugify(&format!("cover:{}", relative_path.display())));
         let content_type = detect_image_content_type(&sidecar)
             .unwrap_or_else(|| "application/octet-stream".to_string());
+        eprintln!(
+            "[scanner-cover] register sidecar cover_id={} path={} content_type={} track_dir={}",
+            id.0,
+            relative_path.display(),
+            content_type,
+            parent.strip_prefix(root).unwrap_or(parent).display()
+        );
         self.cover_art_by_path
             .insert(relative_path.clone(), id.clone());
         self.cover_arts.insert(
@@ -339,6 +346,23 @@ impl LibraryBuilder {
     }
 
     fn build(self, cache_hits: usize, cache_misses: usize) -> LibraryIndex {
+        let albums_with_cover = self
+            .albums
+            .values()
+            .filter(|album| album.cover_art_id.is_some())
+            .count();
+        let tracks_with_cover = self
+            .tracks
+            .values()
+            .filter(|track| track.cover_art_id.is_some())
+            .count();
+        let sample_missing_cover_albums = self
+            .albums
+            .values()
+            .filter(|album| album.cover_art_id.is_none())
+            .take(10)
+            .map(|album| format!("{} [{}]", album.title, album.id.0))
+            .collect::<Vec<_>>();
         eprintln!(
             "[scanner] finalizing library artists={} albums={} tracks={} cover_arts={}",
             self.artists.len(),
@@ -346,6 +370,19 @@ impl LibraryBuilder {
             self.tracks.len(),
             self.cover_arts.len()
         );
+        eprintln!(
+            "[scanner-cover] summary albums_with_cover={} albums_without_cover={} tracks_with_cover={} tracks_without_cover={}",
+            albums_with_cover,
+            self.albums.len().saturating_sub(albums_with_cover),
+            tracks_with_cover,
+            self.tracks.len().saturating_sub(tracks_with_cover)
+        );
+        if !sample_missing_cover_albums.is_empty() {
+            eprintln!(
+                "[scanner-cover] sample albums without cover: {}",
+                sample_missing_cover_albums.join(", ")
+            );
+        }
         eprintln!(
             "[scanner] scan complete artists={} albums={} tracks={} cover_arts={} cache_hits={} cache_misses={}",
             self.artists.len(),

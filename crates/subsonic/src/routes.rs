@@ -44,6 +44,7 @@ pub async fn handle_request(
         }
         "/rest/getCoverArt" => {
             let cover_art_id = query_value(&request, "id").unwrap_or_default();
+            eprintln!("[subsonic-cover] request getCoverArt id={}", cover_art_id);
             map_cover_art(backend.cover_art(cover_art_id).await?)
         }
         "/rest/search3" => {
@@ -293,6 +294,16 @@ fn map_track(
             "backend returned unexpected response for getSong".to_string(),
         ));
     };
+    eprintln!(
+        "[subsonic-cover] song id={} album={} cover_art_id={}",
+        track.id.0,
+        track.album,
+        track
+            .cover_art_id
+            .as_ref()
+            .map(|id| id.0.as_str())
+            .unwrap_or("<none>")
+    );
 
     match format {
         ResponseFormat::Xml => Ok(SubsonicResponse::Xml(wrap_xml(&format!(
@@ -340,6 +351,16 @@ fn map_album(
             "backend returned unexpected response for getAlbum".to_string(),
         ));
     };
+    eprintln!(
+        "[subsonic-cover] album id={} title={} cover_art_id={}",
+        album.id.0,
+        album.title,
+        album
+            .cover_art_id
+            .as_ref()
+            .map(|id| id.0.as_str())
+            .unwrap_or("<none>")
+    );
 
     match format {
         ResponseFormat::Xml => {
@@ -498,6 +519,12 @@ fn map_cover_art(response: BackendResponse) -> server::Result<SubsonicResponse> 
             "backend returned unexpected response for getCoverArt".to_string(),
         ));
     };
+    eprintln!(
+        "[subsonic-cover] response getCoverArt id={} bytes={} content_type={}",
+        cover_art.cover_art_id.0,
+        cover_art.bytes.len(),
+        cover_art.content_type
+    );
 
     Ok(SubsonicResponse::Binary {
         content_type: cover_art.content_type,
