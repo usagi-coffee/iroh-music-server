@@ -352,9 +352,9 @@ impl MusicServer {
                 let tagged_file =
                     lofty::probe::Probe::open(&full_path).and_then(|probe| probe.read())?;
                 let picture = tagged_file
-                    .primary_tag()
-                    .or_else(|| tagged_file.first_tag())
-                    .and_then(select_embedded_picture)
+                    .tags()
+                    .iter()
+                    .find_map(select_embedded_picture)
                     .ok_or_else(|| {
                         Error::InvalidRequest(format!(
                             "embedded cover art missing for track {}",

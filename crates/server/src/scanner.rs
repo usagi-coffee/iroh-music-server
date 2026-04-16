@@ -802,6 +802,14 @@ impl ScanCache {
             return Ok(None);
         }
 
+        if !tags_json.contains("\"has_embedded_cover\"") {
+            eprintln!(
+                "[scanner-cover] cache refresh needed relative_path={} reason=legacy-embedded-cover-field-missing",
+                relative_path
+            );
+            return Ok(None);
+        }
+
         Ok(Some(serde_json::from_str(&tags_json)?))
     }
 
@@ -978,7 +986,7 @@ fn read_track_tags(
         .get_string(lofty::tag::ItemKey::MusicBrainzReleaseGroupId)
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.trim().to_string());
-    tags.has_embedded_cover = !tag.pictures().is_empty();
+    tags.has_embedded_cover = tagged_file.tags().iter().any(|tag| !tag.pictures().is_empty());
 
     tags
 }
