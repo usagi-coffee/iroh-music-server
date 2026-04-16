@@ -39,35 +39,34 @@ crates/
 - `server`: the actual music server
 - `subsonic`: Subsonic facade over the backend
 
-## Install
+## Usage
+
+### Server
 
 ```sh
-cargo install --path crates/server
-cargo install --path crates/subsonic
+# Install iroh-fm binary
+cargo install --git https://github.com/usagi-coffee/iroh-fm server
+
+iroh-fm \
+  --music-dir /path/to/music \        # required; root music directory
+  --secret your-secret-key \          # optional; fixed iroh identity
+  --relay https://relay.example.com \ # optional; advertised relay URL
+  --peer peer-endpoint-id-1 \         # optional; allowlist peer, repeatable
+  --peer peer-endpoint-id-2           # optional; omit all --peer flags for open access
 ```
-
-This installs:
-
-- `iroh-fm`
-- `iroh-fm-subsonic`
-
-## Run
-
-### Backend
-
-```sh
-iroh-fm --music-dir /path/to/music
-```
-
-It prints an endpoint id and a ticket.
 
 ### Subsonic frontend
 
 ```sh
-iroh-fm-subsonic --bind 127.0.0.1:4040 --ticket <ticket>
+# Install iroh-fm-subsonic binary
+cargo install --git https://github.com/usagi-coffee/iroh-fm subsonic
+
+iroh-fm-subsonic \
+  --bind 127.0.0.1:4040 \                 # optional; default 127.0.0.1:4040
+  --ticket your-endpoint-ticket \         # required unless --endpoint is used; backend ticket
+  --endpoint your-backend-endpoint-id \   # required unless --ticket is used; backend endpoint id
+  --relay https://relay.example.com \     # optional; overrides relay from ticket
+  --secret your-secret-key \              # optional; fixed local iroh identity
+  --username admin \                      # optional; default admin
+  --password admin                        # optional; default admin
 ```
-
-Default Subsonic credentials:
-
-- username: `admin`
-- password: `admin`
