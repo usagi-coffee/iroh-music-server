@@ -425,7 +425,7 @@ async fn map_album(
         ResponseFormat::Xml => {
             let mut body = render_album_xml_open(&album);
             for track in tracks {
-                body.push_str(&render_song_xml(&track));
+                body.push_str(&render_song_xml(&track, Some(&album.id.0)));
             }
             body.push_str("</album>");
             Ok(SubsonicResponse::Xml(wrap_xml(&body)))
@@ -442,7 +442,10 @@ async fn map_album(
                 "coverArt": album.cover_art_id.map(|id| id.0),
                 "duration": album.duration_seconds,
                 "size": album.size_bytes,
-                "song": tracks.into_iter().map(|track| render_song_json(&track)).collect::<Vec<_>>()
+                "song": tracks
+                    .into_iter()
+                    .map(|track| render_song_json(&track, Some(&album.id.0)))
+                    .collect::<Vec<_>>()
             }
         })))),
     }
@@ -924,9 +927,9 @@ fn render_album_json(album: protocol::Album) -> serde_json::Value {
     })
 }
 
-fn render_song_xml(track: &protocol::Track) -> String {
+fn render_song_xml(track: &protocol::Track, parent: Option<&str>) -> String {
     format!(
-        "<song id=\"{}\" title=\"{}\" artist=\"{}\" album=\"{}\" contentType=\"{}\"{}{}{}{} />",
+        "<song id=\"{}\" title=\"{}\" artist=\"{}\" album=\"{}\" isDir=\"false\" contentType=\"{}\"{}{}{}{}{}{}{}{} />",
         xml_escape(&track.id.0),
         xml_escape(&track.title),
         xml_escape(&track.artist),
@@ -936,21 +939,29 @@ fn render_song_xml(track: &protocol::Track) -> String {
             "coverArt",
             track.cover_art_id.as_ref().map(|id| id.0.as_str())
         ),
+        optional_attr("suffix", track.suffix.as_deref()),
+        optional_number_attr("size", Some(track.file_size)),
         optional_number_attr("track", track.track_number),
         optional_number_attr("discNumber", track.disc_number),
-        optional_number_attr("duration", track.duration_seconds)
+        optional_number_attr("duration", track.duration_seconds),
+        optional_number_attr("bitRate", track.bitrate),
+        optional_attr("parent", parent)
     )
 }
 
-fn render_song_json(track: &protocol::Track) -> serde_json::Value {
+fn render_song_json(track: &protocol::Track, parent: Option<&str>) -> serde_json::Value {
     json!({
         "id": track.id.0,
         "title": track.title,
         "artist": track.artist,
         "album": track.album,
         "albumArtist": track.album_artist,
+        "isDir": false,
         "contentType": track.content_type,
         "coverArt": track.cover_art_id.as_ref().map(|id| id.0.clone()),
+        "parent": parent,
+        "albumId": parent,
+        "type": "music",
         "track": track.track_number,
         "discNumber": track.disc_number,
         "duration": track.duration_seconds,
@@ -1193,5 +1204,10 @@ mod tests {
         assert!(songs.is_array(), "album.song should be an array");
         assert_eq!(songs.as_array().unwrap().len(), 1);
         assert_eq!(songs[0]["title"], "First Song");
+        assert_eq!(songs[0]["isDir"], false);
+        assert_eq!(songs[0]["parent"], "album-a");
+        assert_eq!(songs[0]["albumId"], "album-a");
+        assert_eq!(songs[0]["type"], "music");
+        assert_eq!(songs[0]["size"], 2048);
     }
 }
