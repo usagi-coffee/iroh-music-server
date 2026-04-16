@@ -142,7 +142,15 @@ async fn rest_handler(
 
     match handle_request(&state.config, &state.backend, request).await {
         Ok(response) => {
-            eprintln!("[subsonic] request ok path={}", rest);
+            if response_is_ok(&response) {
+                eprintln!("[subsonic] request ok path={}", rest);
+            } else {
+                eprintln!(
+                    "[subsonic] request subsonic-error path={} response={}",
+                    rest,
+                    response_summary(&response)
+                );
+            }
             into_http_response(response)
         }
         Err(error) => {
@@ -229,6 +237,24 @@ fn into_http_response(response: SubsonicResponse) -> Response {
             );
             response
         }
+    }
+}
+
+fn response_is_ok(response: &SubsonicResponse) -> bool {
+    match response {
+        SubsonicResponse::Xml(body) => body.contains("status=\"ok\""),
+        SubsonicResponse::Json(body) => !body.contains("\"status\":\"failed\""),
+        SubsonicResponse::Binary { .. } => true,
+    }
+}
+
+fn response_summary(response: &SubsonicResponse) -> String {
+    match response {
+        SubsonicResponse::Xml(body) | SubsonicResponse::Json(body) => body.clone(),
+        SubsonicResponse::Binary {
+            content_type,
+            bytes,
+        } => format!("binary content_type={} bytes={}", content_type, bytes.len()),
     }
 }
 

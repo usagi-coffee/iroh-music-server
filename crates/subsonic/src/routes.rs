@@ -50,6 +50,7 @@ pub async fn handle_request(
             let term = query_value(&request, "query").unwrap_or_default();
             map_search(format, backend.search(term, 20).await?)
         }
+        "/rest/scrobble" => Ok(empty_ok(format)),
         "/rest/stream" => {
             let track_id = query_value(&request, "id").unwrap_or_default();
             map_stream(backend.stream(track_id).await?)
@@ -647,6 +648,13 @@ fn ok_message(format: ResponseFormat, message: &str) -> SubsonicResponse {
             xml_escape(message)
         ))),
         ResponseFormat::Json => SubsonicResponse::Json(wrap_json(json!({ "message": message }))),
+    }
+}
+
+fn empty_ok(format: ResponseFormat) -> SubsonicResponse {
+    match format {
+        ResponseFormat::Xml => SubsonicResponse::Xml(wrap_xml("")),
+        ResponseFormat::Json => SubsonicResponse::Json(wrap_json(json!({}))),
     }
 }
 
