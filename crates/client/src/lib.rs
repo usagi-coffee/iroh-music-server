@@ -296,7 +296,8 @@ fn log_connection_path(prefix: &str, event: &str, conn: &Connection) {
 }
 
 fn connection_path_label(conn: &Connection) -> String {
-    let Some(path) = conn.to_info().selected_path() else {
+    let paths = conn.paths();
+    let Some(path) = paths.iter().find(|path| path.is_selected()) else {
         return "type=unknown selected_path=<none>".to_string();
     };
     let kind = if path.is_relay() {
@@ -306,10 +307,7 @@ fn connection_path_label(conn: &Connection) -> String {
     } else {
         "custom"
     };
-    let rtt = path
-        .rtt()
-        .map(|rtt| format!(" rtt_ms={}", rtt.as_millis()))
-        .unwrap_or_default();
+    let rtt = format!(" rtt_ms={}", path.rtt().as_millis());
     format!(
         "type={} selected_path={:?} remote_addr={}{}",
         kind,

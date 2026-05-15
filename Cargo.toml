@@ -4,8 +4,8 @@ resolver = "3"
 
 [workspace.dependencies]
 axum = "0.8"
-iroh = "0.98"
-iroh-tickets = "0.5"
+iroh = "1.0.0-rc.0"
+iroh-tickets = "1.0.0-rc.0"
 lofty = "0.24"
 md5 = "0.8"
 notify = "8"
